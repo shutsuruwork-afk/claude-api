@@ -3,10 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://api.anthropic.com; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#faf9f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1d1c1a" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Claude">
 <title>Claude</title>
-<link rel="stylesheet" href="/vendor/github.min.css" media="(prefers-color-scheme: light)">
-<link rel="stylesheet" href="/vendor/github-dark.min.css" media="(prefers-color-scheme: dark)">
-<link rel="stylesheet" href="/style.css">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="vendor/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="vendor/github-dark.min.css" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="app">
@@ -19,6 +28,7 @@
     </div>
     <nav class="conv-list" id="convList" aria-label="会話一覧"></nav>
     <div class="sidebar-foot">
+      <button class="key-btn" id="keyBtn" type="button" hidden>APIキー</button>
       <div class="spend">
         <span>これまでの利用</span>
         <strong id="totalCost">$0.00</strong>
@@ -73,9 +83,26 @@
   </main>
 </div>
 
-<script src="/vendor/marked.min.js"></script>
-<script src="/vendor/purify.min.js"></script>
-<script src="/vendor/highlight.min.js"></script>
-<script src="/app.js"></script>
+<dialog class="key-dialog" id="keyDialog">
+  <h2>APIキー</h2>
+  <p>Claude Console で作成したキー(<code>sk-ant-...</code>)を貼り付けてください。</p>
+  <input id="keyInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-..." aria-label="APIキー">
+  <p class="key-status" id="keyStatus"></p>
+  <ul>
+    <li>キーはこの端末のブラウザにだけ保存され、Claude API(api.anthropic.com)以外には送られません。</li>
+    <li>端末を失くしたときは、Console でこのキーを無効にしてください。</li>
+  </ul>
+  <div class="key-actions">
+    <button id="keyDelete" type="button" class="danger">キーを削除</button>
+    <button id="keyCancel" type="button">閉じる</button>
+    <button id="keySave" type="button" class="primary">保存</button>
+  </div>
+</dialog>
+
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="direct.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

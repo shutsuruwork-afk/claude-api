@@ -32,7 +32,31 @@ python web.py
 - **会話の保存**: 会話はブラウザ(localStorage)に残り、左の一覧から再開できます
 - **その他**: 途中停止、再生成、思考の要約表示、Markdown とコードのハイライト、ダーク/ライト自動切り替え
 
-API キーは `web.py` のプロセスだけが持ち、ブラウザには渡りません。サーバーは自分の PC(127.0.0.1)からしか使えません。
+`python web.py` で使うときは、API キーは `web.py` のプロセスだけが持ち、ブラウザには渡りません。サーバーは自分の PC(127.0.0.1)からしか使えません。
+
+## スマホで使う(PC を起動しない)
+
+`web/` フォルダは、サーバーなしの静的サイトとしても動きます。どこかに公開して開くと、ブラウザから Claude API を直接呼びます。
+
+1. `web/` を静的ホスティングに置く(下の A か B)
+2. スマホのブラウザで開き、最初に出る画面に API キーを貼り付ける
+3. 共有メニューから「ホーム画面に追加」すると、アプリのように全画面で開けます
+
+**A. GitHub Pages**(リポジトリを公開にする必要あり。無料プランの場合)
+
+- リポジトリの Settings → General → Danger Zone で Public に変更
+- Settings → Pages → Source「Deploy from a branch」→ このブランチ、フォルダ `/ (root)` を選んで Save
+- 数分後に `https://<ユーザー名>.github.io/claude-api/` で開けます
+
+**B. Cloudflare Pages など**(リポジトリは非公開のまま)
+
+- GitHub 連携でこのリポジトリを選び、ビルドコマンドなし、出力ディレクトリ `web` で作成
+
+どちらの場合も、公開されるのは画面のコードだけです。API キーはリポジトリにもサイトにも含まれず、キーを入れた端末のブラウザにだけ保存されます。
+
+- URL を知っている人は画面を開けますが、自分のキーを入れない限り何もできません
+- キーはスマホ用に別に 1 本作っておくと、失くしたときにそれだけ無効にできます
+- 会話履歴は端末ごとに保存され、PC とスマホの間で同期はされません
 
 ## 使い方(ターミナル)
 
@@ -65,4 +89,4 @@ python chat.py --model claude-haiku-5-5  # 最安
 
 ## 同梱ライブラリ
 
-`web/vendor/` に marked 12.0.2(MIT)、DOMPurify 3.1.6(Apache-2.0 / MPL-2.0)、highlight.js 11.9.0(BSD-3-Clause)を同梱しています。
+`web/vendor/` に marked 12.0.2(MIT)、DOMPurify 3.1.6(Apache-2.0 / MPL-2.0)、highlight.js 11.9.0(BSD-3-Clause)、Anthropic TypeScript SDK 1.8.0(MIT)を同梱しています。

@@ -90,6 +90,33 @@ button { cursor: pointer; }
 .spend strong { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; }
 .spend.sub { font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .scrim { display: none; }
+.key-btn {
+  width: 100%; margin-bottom: 10px; padding: 6px 10px;
+  background: none; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--muted); font-size: 13px;
+}
+.key-btn:hover { border-color: var(--accent); color: var(--text); }
+
+.key-dialog {
+  width: min(92vw, 440px); padding: 22px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow);
+  font-size: 14px; line-height: 1.7;
+}
+.key-dialog::backdrop { background: rgba(0, 0, 0, .4); }
+.key-dialog h2 { margin: 0 0 6px; font-size: 18px; }
+.key-dialog p { margin: 0 0 12px; }
+.key-dialog input {
+  width: 100%; padding: 10px 12px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  font: 16px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.key-dialog ul { margin: 0 0 16px; padding-left: 1.3em; color: var(--muted); font-size: 13px; }
+.key-status { min-height: 1.7em; margin: 6px 0 4px !important; color: var(--muted); font-size: 13px; }
+.key-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.key-actions button { padding: 7px 16px; background: none; border: 1px solid var(--line); border-radius: 9px; }
+.key-actions .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.key-actions .danger { margin-right: auto; color: var(--danger); }
 
 /* ---------- メイン ---------- */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -279,7 +306,8 @@ button { cursor: pointer; }
   .topbar { padding: 8px 10px; gap: 2px; }
   .topbar-cost { display: none; }
   .select { min-width: 0; }
-  .select select { max-width: 100%; text-overflow: ellipsis; }
+  .select select { max-width: 100%; text-overflow: ellipsis; font-size: 16px; }
+  .system-edit textarea { font-size: 16px; }
   .thread { padding: 4px 16px 24px; }
   .composer { padding-inline: 12px; }
   .hint { display: none; }

@@ -12,6 +12,7 @@ const el = (tag, className, text) => {
 // ---------- 状態 ----------
 
 let models = [];
+let direct = false;      // true: web.py なしで、ブラウザから API を直接呼ぶ
 let store = loadStore();
 let current = null;      // 表示中の会話
 let run = null;          // 応答中なら { conv, abort, text, thinking, thinkingLive, node }
@@ -322,6 +323,7 @@ function submit() {
   const input = $("input");
   const text = input.value.trim();
   if (!text || run) return;
+  if (direct && !Direct.getKey()) return openKeyDialog();
 
   if (!store.convs.includes(current)) {
     current.system = current.system.trim();
@@ -350,44 +352,53 @@ async function startRun(conv) {
   renderAll();
   toBottom();
 
+  const { signal } = run.abort;
+  const request = {
+    model: conv.model,
+    effort: conv.effort,
+    system: conv.system,
+    messages: conv.messages.map(({ role, content }) => ({ role, content })),
+  };
   let done = null;
   let error = null;
   try {
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: run.abort.signal,
-      body: JSON.stringify({
-        model: conv.model,
-        effort: conv.effort,
-        system: conv.system,
-        messages: conv.messages.map(({ role, content }) => ({ role, content })),
-      }),
-    });
-    if (!response.ok) {
-      error = (await response.json().catch(() => ({}))).error || `サーバーエラー (${response.status})`;
-    } else {
-      for await (const [name, data] of readEvents(response.body)) {
-        if (name === "text") {
-          run.text += data.text;
-          run.thinkingLive = false;
-        } else if (name === "thinking") {
-          run.thinking += data.text;
-          run.thinkingLive = true;
-        } else if (name === "done") {
-          done = data;
-        } else if (name === "error") {
-          error = data.message;
-        }
-        scheduleLiveRender();
+    for await (const [name, data] of direct ? Direct.events(request, signal) : serverEvents(request, signal)) {
+      if (name === "text") {
+        run.text += data.text;
+        run.thinkingLive = false;
+      } else if (name === "thinking") {
+        run.thinking += data.text;
+        run.thinkingLive = true;
+      } else if (name === "done") {
+        done = data;
+      } else if (name === "error") {
+        error = data.message;
       }
-      if (!done && !error) error = "応答の途中で接続が切れました。";
+      scheduleLiveRender();
     }
+    if (!done && !error) error = "応答の途中で接続が切れました。";
   } catch (e) {
-    if (e.name !== "AbortError") error = "サーバーに接続できません。web.py が動いているか確認してください。";
+    if (!signal.aborted) {
+      error = direct ? `エラーが起きました: ${e.message}` : "サーバーに接続できません。web.py が動いているか確認してください。";
+    }
   }
 
   finishRun(conv, done, error);
+}
+
+async function* serverEvents(request, signal) {
+  const response = await fetch("api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal,
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    const message = (await response.json().catch(() => ({}))).error || `サーバーエラー (${response.status})`;
+    yield ["error", { message }];
+    return;
+  }
+  yield* readEvents(response.body);
 }
 
 async function* readEvents(body) {
@@ -483,27 +494,62 @@ $("effortSelect").onchange = (e) => {
   saveStore();
 };
 
+// ---------- APIキー (サーバーなしのときだけ) ----------
+
+function openKeyDialog() {
+  $("keyInput").value = "";
+  $("keyStatus").textContent = Direct.getKey() ? "この端末にはキーが保存されています。入れ直すと上書きします。" : "";
+  $("keyDelete").hidden = !Direct.getKey();
+  document.body.classList.remove("nav-open");
+  $("keyDialog").showModal();
+}
+
+$("keyBtn").onclick = openKeyDialog;
+$("keyCancel").onclick = () => $("keyDialog").close();
+$("keyDelete").onclick = () => {
+  Direct.setKey("");
+  $("keyDialog").close();
+};
+$("keySave").onclick = () => {
+  const key = $("keyInput").value.trim();
+  if (!key.startsWith("sk-ant-")) {
+    $("keyStatus").textContent = "sk-ant- で始まるキーを貼り付けてください。";
+    return;
+  }
+  Direct.setKey(key);
+  $("keyDialog").close();
+  $("input").focus();
+};
+
 // ---------- 起動 ----------
 
 async function init() {
+  let defaultModel;
   try {
-    const config = await (await fetch("/api/config")).json();
+    // web.py から開いたときは API キーをサーバーが持つ。
+    const config = await (await fetch("api/config")).json();
     models = config.models;
-    for (const model of models) {
-      const option = el("option", "", model.label);
-      option.value = model.id;
-      $("modelSelect").append(option);
-    }
-    store.model = models.some((m) => m.id === store.model) ? store.model : config.defaultModel;
+    defaultModel = config.defaultModel;
     if (!config.hasKey) {
       showBanner("APIキーが設定されていません。ターミナルで <code>export ANTHROPIC_API_KEY=sk-ant-...</code> を実行してから <code>python web.py</code> を起動し直してください。");
     }
   } catch {
-    showBanner("サーバーに接続できません。<code>python web.py</code> が動いているか確認してください。");
+    // サーバーがない (静的ホスティング) ので、ブラウザから直接 API を呼ぶ。
+    direct = true;
+    models = Direct.MODELS;
+    defaultModel = Direct.DEFAULT_MODEL;
+    $("keyBtn").hidden = false;
   }
+  for (const model of models) {
+    const option = el("option", "", model.label);
+    option.value = model.id;
+    $("modelSelect").append(option);
+  }
+  store.model = models.some((m) => m.id === store.model) ? store.model : defaultModel;
   current = store.convs.find((c) => c.id === store.activeId) || newConv();
   renderAll();
   toBottom();
+  if (direct && !Direct.getKey()) openKeyDialog();
 }
 
 init();
