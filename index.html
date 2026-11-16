@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P2P 接続テスト</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --fg: #1d2129; --muted: #667085; --card: #fff;
+    --border: #d6dae1; --accent: #2563eb; --ok: #15803d; --ng: #b91c1c; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --fg: #e6e8eb; --muted: #9aa3af; --card: #1b2028;
+      --border: #2e3540; --accent: #60a5fa; --ok: #4ade80; --ng: #f87171; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-bottom: 16px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tabs button[aria-selected="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input, textarea { font: inherit; width: 100%; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+  textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; min-height: 90px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .row > input { flex: 1 1 200px; width: auto; }
+  .id { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; word-break: break-all; }
+  .status { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px; }
+  .status dt { color: var(--muted); }
+  .status dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .ok { color: var(--ok); } .ng { color: var(--ng); } .warn { color: var(--warn); }
+  #chat { height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px; background: var(--bg); font-size: 14px; }
+  #chat .me { color: var(--accent); } #chat .sys { color: var(--muted); font-style: italic; }
+  #log { height: 200px; overflow-y: auto; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px;
+    white-space: pre-wrap; word-break: break-all; }
+  ol { padding-left: 1.3em; margin: 0 0 8px; } ol li { margin-bottom: 2px; }
+  .hidden { display: none; }
+  .hint { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>P2P 接続テスト (WebRTC)</h1>
+  <p class="lead">2台の端末（または2つのブラウザ）でこのページを開き、WebRTC DataChannel で直接つながるか確認します。</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="peerjs">かんたん (PeerJS)</button>
+    <button role="tab" aria-selected="false" data-tab="manual">手動 (サーバーなし)</button>
+  </div>
+
+  <section id="tab-peerjs">
+    <h2>PeerJS モード</h2>
+    <ol class="hint">
+      <li>両方の端末でこのページを開く</li>
+      <li>片方の「自分の ID」をもう片方の入力欄に貼り付けて「接続」</li>
+    </ol>
+    <p class="hint">シグナリング（最初の ID 交換）のみ PeerJS の公開サーバーを使い、データ本体は P2P で流れます。</p>
+    <div class="row">自分の ID: <span class="id" id="myId">取得中…</span>
+      <button id="copyId" disabled>コピー</button></div>
+    <div class="row">
+      <input id="remoteId" placeholder="相手の ID" autocomplete="off">
+      <button class="primary" id="connectBtn" disabled>接続</button>
+    </div>
+  </section>
+
+  <section id="tab-manual" class="hidden">
+    <h2>手動モード（外部サーバー不要）</h2>
+    <p class="hint">SDP をコピー＆ペーストで交換します（チャットやメールで送る）。STUN 以外の外部サーバーを使いません。</p>
+    <div class="row">
+      <button class="primary" id="mkOffer">A: オファーを作成</button>
+      <span class="hint">← 接続を開始する側</span>
+    </div>
+    <label class="hint" for="localSdp">自分の SDP（相手に送る）</label>
+    <textarea id="localSdp" readonly></textarea>
+    <div class="row"><button id="copySdp">コピー</button></div>
+    <label class="hint" for="remoteSdp">相手の SDP（ここに貼る）</label>
+    <textarea id="remoteSdp"></textarea>
+    <div class="row">
+      <button class="primary" id="applyRemote">相手の SDP を適用</button>
+      <span class="hint">B は A のオファーを貼って適用 → 出てきたアンサーを A に返す。A はそれを貼って適用。</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>接続状態</h2>
+    <dl class="status">
+      <dt>シグナリング</dt><dd id="sSig">-</dd>
+      <dt>ICE</dt><dd id="sIce">-</dd>
+      <dt>接続</dt><dd id="sConn">-</dd>
+      <dt>DataChannel</dt><dd id="sDc">-</dd>
+      <dt>経路</dt><dd id="sRoute">-</dd>
+      <dt>RTT</dt><dd id="sRtt">-</dd>
+      <dt>自分の候補</dt><dd id="sCands">-</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>メッセージ</h2>
+    <div id="chat"></div>
+    <div class="row">
+      <input id="msg" placeholder="メッセージ" disabled autocomplete="off">
+      <button id="send" disabled>送信</button>
+      <button id="ping" disabled>Ping ×10</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>ログ</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+const $ = id => document.getElementById(id);
+const t0 = performance.now();
+
+function log(msg, cls) {
+  const el = $('log');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `[${((performance.now() - t0) / 1000).toFixed(2)}s] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+function chat(text, cls) {
+  const el = $('chat');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = text;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+function setStat(id, text, cls) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = cls || '';
+}
+const stateClass = s => ({ connected: 'ok', completed: 'ok', open: 'ok', stable: 'ok',
+  failed: 'ng', closed: 'ng', disconnected: 'warn' }[s] || '');
+
+// ---------- Tabs ----------
+document.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', b === btn));
+  $('tab-peerjs').classList.toggle('hidden', btn.dataset.tab !== 'peerjs');
+  $('tab-manual').classList.toggle('hidden', btn.dataset.tab !== 'manual');
+}));
+
+// ---------- Shared: watch a RTCPeerConnection ----------
+const candTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+function renderCands() {
+  const parts = Object.entries(candTypes).filter(([, n]) => n).map(([k, n]) => `${k}×${n}`);
+  setStat('sCands', parts.join('  ') || '-', candTypes.srflx ? 'ok' : (candTypes.host ? 'warn' : ''));
+}
+
+let watchedPc = null;
+function watchPc(pc) {
+  if (!pc || watchedPc === pc) return;
+  watchedPc = pc;
+  const upd = () => {
+    setStat('sSig', pc.signalingState, stateClass(pc.signalingState));
+    setStat('sIce', pc.iceConnectionState, stateClass(pc.iceConnectionState));
+    setStat('sConn', pc.connectionState, stateClass(pc.connectionState));
+  };
+  upd();
+  pc.addEventListener('signalingstatechange', () => { upd(); log('signaling: ' + pc.signalingState); });
+  pc.addEventListener('iceconnectionstatechange', () => {
+    upd(); log('ICE: ' + pc.iceConnectionState, stateClass(pc.iceConnectionState));
+    if (pc.iceConnectionState === 'failed') {
+      log('→ 直接接続できませんでした。両方が対称型NAT/厳しいFWの裏にある可能性があり、TURN サーバーが必要です。', 'ng');
+    }
+  });
+  pc.addEventListener('connectionstatechange', () => {
+    upd();
+    if (pc.connectionState === 'connected') setTimeout(() => reportRoute(pc), 300);
+  });
+  pc.addEventListener('icegatheringstatechange', () => log('ICE gathering: ' + pc.iceGatheringState));
+  pc.addEventListener('icecandidate', e => {
+    if (!e.candidate || !e.candidate.candidate) return;
+    const type = (e.candidate.candidate.match(/ typ (\w+)/) || [])[1] || '?';
+    candTypes[type] = (candTypes[type] || 0) + 1;
+    renderCands();
+    log(`候補: ${type} ${e.candidate.protocol || ''} ${e.candidate.address || '(mDNS/秘匿)'}:${e.candidate.port || ''}`);
+  });
+  pc.addEventListener('icecandidateerror', e => log(`候補エラー: ${e.url || ''} ${e.errorCode} ${e.errorText}`, 'warn'));
+}
+
+async function reportRoute(pc) {
+  try {
+    const stats = await pc.getStats();
+    let pair = null;
+    stats.forEach(r => {
+      if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId);
+    });
+    if (!pair) stats.forEach(r => { if (r.type === 'candidate-pair' && (r.selected || r.nominated) && r.state === 'succeeded') pair = r; });
+    if (!pair) return;
+    const l = stats.get(pair.localCandidateId), r = stats.get(pair.remoteCandidateId);
+    const desc = `${l?.candidateType} ⇄ ${r?.candidateType} (${l?.protocol || ''})`;
+    const relayed = l?.candidateType === 'relay' || r?.candidateType === 'relay';
+    setStat('sRoute', desc + (relayed ? ' [TURN中継]' : ' [直接P2P]'), relayed ? 'warn' : 'ok');
+    if (pair.currentRoundTripTime != null) setStat('sRtt', (pair.currentRoundTripTime * 1000).toFixed(0) + ' ms');
+    log('選択された経路: ' + desc, 'ok');
+  } catch (e) { log('getStats 失敗: ' + e, 'warn'); }
+}
+
+// ---------- Shared: message channel abstraction ----------
+let sendFn = null;
+const pingSent = new Map();
+const rtts = [];
+let pingTotal = 0;
+function onChannelOpen(send, label) {
+  sendFn = send;
+  setStat('sDc', 'open', 'ok');
+  $('msg').disabled = $('send').disabled = $('ping').disabled = false;
+  chat(`✅ ${label} で接続しました`, 'sys');
+  log('DataChannel open — P2P 接続成功', 'ok');
+}
+function onChannelClose() {
+  sendFn = null;
+  setStat('sDc', 'closed', 'ng');
+  $('msg').disabled = $('send').disabled = $('ping').disabled = true;
+  chat('接続が閉じられました', 'sys');
+}
+function onChannelData(raw) {
+  let m; try { m = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { m = { t: 'msg', v: String(raw) }; }
+  if (m.t === 'ping') sendFn && sendFn(JSON.stringify({ t: 'pong', id: m.id }));
+  else if (m.t === 'pong') {
+    const s = pingSent.get(m.id);
+    if (s != null) {
+      pingSent.delete(m.id);
+      rtts.push(performance.now() - s);
+      if (rtts.length === pingTotal) {
+        const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
+        chat(`Ping: ${rtts.length}回 平均 ${avg.toFixed(1)} ms / 最小 ${Math.min(...rtts).toFixed(1)} / 最大 ${Math.max(...rtts).toFixed(1)}`, 'sys');
+        setStat('sRtt', avg.toFixed(1) + ' ms (アプリ層)');
+      }
+    }
+  } else chat('相手: ' + m.v);
+}
+function sendMsg() {
+  const v = $('msg').value.trim();
+  if (!v || !sendFn) return;
+  sendFn(JSON.stringify({ t: 'msg', v }));
+  chat('自分: ' + v, 'me');
+  $('msg').value = '';
+}
+$('send').onclick = sendMsg;
+$('msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) sendMsg(); });
+$('ping').onclick = () => {
+  if (!sendFn) return;
+  rtts.length = 0; pingSent.clear(); pingTotal = 10;
+  for (let i = 0; i < 10; i++) setTimeout(() => {
+    const id = Math.random().toString(36).slice(2);
+    pingSent.set(id, performance.now());
+    sendFn(JSON.stringify({ t: 'ping', id }));
+  }, i * 100);
+};
+
+// ---------- PeerJS mode ----------
+let peer = null, conn = null;
+function bindConn(c) {
+  if (conn && conn !== c) { log('既存の接続を置き換えます', 'warn'); conn.close(); }
+  conn = c;
+  log('PeerJS 接続: ' + c.peer);
+  const tryWatch = () => watchPc(c.peerConnection);
+  tryWatch();
+  const iv = setInterval(() => { tryWatch(); if (c.peerConnection) clearInterval(iv); }, 50);
+  c.on('open', () => { tryWatch(); onChannelOpen(d => c.send(d), 'PeerJS'); });
+  c.on('data', onChannelData);
+  c.on('close', onChannelClose);
+  c.on('error', e => log('接続エラー: ' + e, 'ng'));
+}
+function initPeer() {
+  if (typeof Peer === 'undefined') {
+    $('myId').textContent = 'PeerJS の読み込みに失敗（手動モードを使ってください）';
+    $('myId').className = 'id ng';
+    return;
+  }
+  peer = new Peer({ config: { iceServers: ICE_SERVERS }, debug: 1 });
+  peer.on('open', id => {
+    $('myId').textContent = id;
+    $('copyId').disabled = $('connectBtn').disabled = false;
+    log('PeerJS シグナリングサーバーに接続 ID=' + id, 'ok');
+    const want = new URLSearchParams(location.search).get('peer');
+    if (want) { $('remoteId').value = want; $('connectBtn').click(); }
+  });
+  peer.on('connection', c => { log('相手から接続要求を受信'); bindConn(c); });
+  peer.on('disconnected', () => log('シグナリングサーバーから切断（P2P接続自体は維持されます）', 'warn'));
+  peer.on('error', e => log('PeerJS エラー: ' + e.type + ' ' + e.message, 'ng'));
+}
+$('connectBtn').onclick = () => {
+  const id = $('remoteId').value.trim();
+  if (!id || !peer) return;
+  log('接続中 → ' + id);
+  bindConn(peer.connect(id, { reliable: true }));
+};
+$('copyId').onclick = async () => {
+  const id = $('myId').textContent;
+  const url = location.origin + location.pathname + '?peer=' + encodeURIComponent(id);
+  try { await navigator.clipboard.writeText(id); log('ID をコピーしました。URL で渡す場合: ' + url); }
+  catch { log('コピー失敗。手動でコピーしてください: ' + id, 'warn'); }
+};
+initPeer();
+
+// ---------- Manual mode ----------
+let mpc = null;
+function newManualPc() {
+  if (mpc) mpc.close();
+  mpc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  watchPc(mpc);
+  return mpc;
+}
+function bindDc(dc) {
+  dc.onopen = () => onChannelOpen(d => dc.send(d), '手動モード');
+  dc.onclose = onChannelClose;
+  dc.onmessage = e => onChannelData(e.data);
+}
+function waitGathering(pc, ms = 5000) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise(res => {
+    const done = () => { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', done); res(); } };
+    pc.addEventListener('icegatheringstatechange', done);
+    setTimeout(res, ms);
+  });
+}
+const encode = desc => btoa(unescape(encodeURIComponent(JSON.stringify({ type: desc.type, sdp: desc.sdp }))));
+const decode = s => JSON.parse(decodeURIComponent(escape(atob(s.trim()))));
+
+$('mkOffer').onclick = async () => {
+  const pc = newManualPc();
+  bindDc(pc.createDataChannel('test'));
+  await pc.setLocalDescription(await pc.createOffer());
+  $('localSdp').value = '候補を収集中…';
+  await waitGathering(pc);
+  $('localSdp').value = encode(pc.localDescription);
+  log('オファー作成完了。相手に送ってください', 'ok');
+};
+$('applyRemote').onclick = async () => {
+  let desc;
+  try { desc = decode($('remoteSdp').value); } catch { log('SDP の形式が不正です', 'ng'); return; }
+  try {
+    if (desc.type === 'offer') {
+      const pc = newManualPc();
+      pc.ondatachannel = e => bindDc(e.channel);
+      await pc.setRemoteDescription(desc);
+      await pc.setLocalDescription(await pc.createAnswer());
+      $('localSdp').value = '候補を収集中…';
+      await waitGathering(pc);
+      $('localSdp').value = encode(pc.localDescription);
+      log('アンサー作成完了。相手（A）に返してください', 'ok');
+    } else if (desc.type === 'answer') {
+      if (!mpc) { log('先にオファーを作成してください', 'ng'); return; }
+      await mpc.setRemoteDescription(desc);
+      log('アンサーを適用しました。接続を待っています…');
+    }
+  } catch (e) { log('適用失敗: ' + e, 'ng'); }
+};
+$('copySdp').onclick = async () => {
+  try { await navigator.clipboard.writeText($('localSdp').value); log('SDP をコピーしました'); }
+  catch { $('localSdp').select(); log('自動コピー失敗。選択状態にしたので手動でコピーしてください', 'warn'); }
+};
+</script>
+</body>
+</html>
