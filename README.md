@@ -1,6 +1,10 @@
 # claude-api
 Chat with claude
 
+> **このリポジトリは公開 (public) です。** 秘密情報や個人情報をコミットしないでください。
+>
+> 公開ページ: https://shutsuruwork-afk.github.io/claude-api/
+
 ## P2P 接続テスト (GitHub Pages)
 
 `index.html` は WebRTC DataChannel で 2 端末が直接つながるか確認するページです。
