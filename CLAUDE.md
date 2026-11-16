@@ -26,6 +26,10 @@
   - 手動モード: SDP をコピー＆ペーストで交換。STUN (stun.l.google.com) のみ使用。
   - リアルタイム通信テスト: 各接続の RTCPeerConnection に negotiated な非信頼 DataChannel（id 100, ordered:false,
     maxRetransmits:0）を追加し、メインの信頼チャネルと比較。開始 (`rtstart`) と結果 (`rtres`) はフラッディングで全員に配る。
+  - 長時間テスト: `ltstart` をフラッディングし、各端末が 20 回/秒の `lp`/`lq` を相手ごとに送って区間（既定 60 秒）ごとに記録、
+    結果 `ltres`（`cleanLt`）を集めて開始端末が `buildLongResult` で自動テストと同じ形式の結果にし、`autores` で共有・履歴保存する（判定キー `long` / `longdrop`）。
+    判定の閾値を変えたら TESTING.md の「8. 長時間テスト」の表も合わせる。
+  - TURN は `turnCheck` が URL ごと（UDP / TCP / TLS）に中継のみのループバックで確認する。TURN の認証情報はコミットしない。
   - **他端末から届く値は信用しない。** メッセージは `handleMessage` で型・範囲を確認し、状態は `cleanStatus` / `cleanRt` / `validResult` を通してから保存・表示する。
     色は `safeColor`、文字列は `esc`/`txt` を必ず通す（`String(x)` は細工された値で例外になるので使わない）。新しいメッセージ種別を足すときも同じ。
   - 経路の `H`/`S` は `sameLan` で候補アドレスを比較して決める（アドレスは比較にだけ使い、保存・表示しない）。

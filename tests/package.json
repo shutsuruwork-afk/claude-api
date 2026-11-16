@@ -3,5 +3,5 @@
   "private": true,
   "description": "index.html の自動テスト（ローカル PeerJS サーバー + Playwright）",
   "scripts": { "test": "node e2e.js" },
-  "devDependencies": { "peer": "^1.0.2", "playwright": "^1.48.0" }
+  "devDependencies": { "node-turn": "^0.0.6", "peer": "^1.0.2", "playwright": "^1.48.0" }
 }

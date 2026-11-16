@@ -187,6 +187,22 @@
       p95 = 95% の通信がこの時間以内（たまに来る遅れを表す）。途切れ = 相手からの受信が 100ms 以上止まった回数。時計ずれ = 相手の時計 − 自分の時計（推定）。</p>
   </section>
 
+  <!-- ===== Long run ===== -->
+  <section>
+    <h2>長時間テスト（ゲーム 1 回分の安定性）</h2>
+    <p class="hint">全員が 20 回/秒で送り合い続け、時間が経っても切れないか・遅くならないかを 1 分ごとに記録します。
+      終わるまで<b>全端末でこのページを前面に出したまま</b>にしてください（画面オフ・別アプリ・別タブは「途切れ」として記録されます）。結果は「保存した結果」に残り、参加者全員に共有されます。</p>
+    <div class="row">
+      <select id="ltDur"><option value="300">5 分</option><option value="600" selected>10 分</option><option value="1800">30 分</option><option value="3600">60 分</option></select>
+      <button class="primary" id="ltBtn" disabled>全員で開始</button>
+      <button id="ltStop" disabled>中止して集計</button>
+    </div>
+    <div id="ltStatus" class="hint"></div>
+    <div class="caps" id="ltSummary"></div>
+    <div class="scroll"><table id="ltTable"></table></div>
+    <p class="hint">経過（区間ごと）: <b class="ok">·</b> 良好 / <b class="warn">▲</b> 遅延・ロスあり（p95 100ms 以上、またはロス 3% 以上）/ <b class="ng">×</b> 不通。途切れ = 相手からの受信が 250ms 以上止まった回数。</p>
+  </section>
+
   <!-- ===== Direct links ===== -->
   <section>
     <h2>自分の直接接続</h2>
@@ -618,7 +634,32 @@ function handleMessage(L, m) {
       runBurst(m);
       break;
     }
-    case 'rp': case 'rq': onRtMsg(L, 'r', m); break;
+    case 'rp': case 'rq': case 'lp': case 'lq': onRtMsg(L, 'r', m); break;
+    case 'ltstart': {
+      if (typeof m.id !== 'string' || !(m.dur >= 2 && m.dur <= 7200) || !(m.win >= 1 && m.win <= 600)) return;
+      if (seenFlood.has('ls' + m.id)) return;
+      seenFlood.add('ls' + m.id);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      startLt(m);
+      break;
+    }
+    case 'ltstop': {
+      if (typeof m.id !== 'string' || seenFlood.has('lx' + m.id)) return;
+      seenFlood.add('lx' + m.id);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      stopLt(m.id);
+      break;
+    }
+    case 'ltres': {
+      if (typeof m.id !== 'string' || !validId(m.from) || !Array.isArray(m.rows)) return;
+      m = cleanLt(m);
+      const key = 'lr' + m.id + m.from;
+      if (seenFlood.has(key)) return;
+      seenFlood.add(key);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      storeLtResult(m);
+      break;
+    }
     case 'rtstart': {
       if (typeof m.id !== 'string' || !(m.rate >= 1 && m.rate <= 120) || !(m.size >= 0 && m.size <= 16384) || !(m.dur >= 1 && m.dur <= 120)) return;
       if (seenFlood.has('rs' + m.id)) return;
@@ -654,6 +695,7 @@ function handleMessage(L, m) {
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
       remoteAuto = null; renderRemoteAuto();
       saveResult(Object.assign({}, m.result, { received: true }));
+      if (m.result.profile === 'long') { showResult(m.result, $('ltSummary')); $('ltStatus').textContent = `${m.result.by} が開始した長時間テストの結果を受信・保存しました`; break; }
       showResult(m.result, $('autoSummary'));
       $('autoStatus').textContent = `${m.result.by} が実行した自動テストの結果を受信・保存しました`;
       break;
@@ -761,6 +803,7 @@ function joinRoom(r) {
     bindConn(L);
   });
   peer.on('disconnected', () => {
+    if (ltRunning()) lt.sigDrops++;
     setSig('切断（再接続します）', 'warn');
     log('シグナリングサーバーから切断。既存の P2P 接続は維持されます', 'warn');
     setTimeout(() => { if (peer && !peer.destroyed && peer.disconnected) try { peer.reconnect(); } catch {} }, 2000);
@@ -1049,6 +1092,7 @@ const rtResults = new Map(); // testId -> Map(from -> result msg)
 function newStat() { return { sent: 0, rtts: [], offs: [], pend: new Map(), unavailable: false }; }
 function startRt(m) {
   if (rt && !rt.done) { log('リアルタイムテストは実行中です', 'warn'); return; }
+  if (ltRunning()) { log('長時間テスト中のためリアルタイムテストは開始しません', 'warn'); return; }
   const interval = 1000 / m.rate;
   rt = { id: m.id, rate: m.rate, size: m.size, dur: m.dur, start: now(), seq: 0, peers: new Map(), rx: new Map(),
     lastTick: now(), maxTickGap: 0, done: false, hid: document.hidden, pad: 'x'.repeat(Math.max(0, m.size - 70)) };
@@ -1079,6 +1123,7 @@ function startRt(m) {
   run.iv = setInterval(tick, interval);
 }
 function onRtMsg(L, k, m) {
+  if (m.t === 'lp' || m.t === 'lq') return onLtMsg(L, k, m);
   if (m.t === 'rp') {
     rtSend(L, k, { t: 'rq', id: m.id, k, s: m.s, w: wallNow() });
     if (rt && rt.id === m.id && !rt.done) { // receive smoothness
@@ -1171,6 +1216,213 @@ $('rtBtn').onclick = () => {
   startRt(m);
 };
 
+// ---------- Long-run stability test ----------
+// Everyone keeps sending small probes for minutes; each device records, per peer and per window,
+// latency / loss / stalls and whether the link dropped and came back.
+let lt = null, ltLatest = null, wakeLock = null;
+const ltResults = new Map(); // testId -> Map(from -> result msg)
+const LT_RATE = 20, LT_PAD = 'x'.repeat(64);
+const ltRunning = () => !!lt && !lt.done;
+const mmss = sec => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+const newWin = () => ({ sent: 0, got: 0, rtts: [], down: false });
+function ltPeer(run, L) {
+  let P = run.peers.get(L.peerId);
+  if (!P) {
+    P = { name: L.name, sent: 0, got: 0, rtts: [], pend: new Map(), w: newWin(), tl: [], bad: 0,
+      lastRx: 0, stalls: 0, maxGap: 0, drops: 0, downMs: 0, downSince: 0, up: true };
+    run.peers.set(L.peerId, P);
+  }
+  return P;
+}
+function startLt(m) {
+  if (ltRunning()) return;
+  if (rt && !rt.done) { log('リアルタイムテスト中のため長時間テストは開始しません', 'warn'); return; }
+  const t = now();
+  lt = { id: m.id, dur: m.dur, win: m.win, start: t, seq: 0, peers: new Map(), lastTick: t, maxTickGap: 0, hid: document.hidden,
+    sigDrops: 0, nextWin: t + m.win * 1000, done: false, ending: false };
+  for (const L of links.values()) if (L.isOpen) ltPeer(lt, L);
+  ltLatest = m.id;
+  $('ltSummary').innerHTML = ''; $('ltTable').innerHTML = '';
+  log(`長時間テスト開始: ${mmss(m.dur)}（${cleanName(m.fromName)} が開始, 直接接続 ${lt.peers.size}）。このページを前面のままにしてください`);
+  try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wakeLock = w; }).catch(() => {}); } catch {} // keep the screen on
+  const run = lt;
+  run.iv = setInterval(() => ltTick(run), 1000 / LT_RATE);
+  renderLtStatus(run, t);
+}
+function ltTick(run) {
+  if (run.done || run.ending) return;
+  const t = now();
+  run.maxTickGap = Math.max(run.maxTickGap, t - run.lastTick);
+  run.lastTick = t;
+  if (t - run.start >= run.dur * 1000) {
+    run.ending = true; run.ran = (t - run.start) / 1000;
+    clearInterval(run.iv);
+    $('ltStatus').textContent = '集計中…';
+    setTimeout(() => finishLt(run), 1500);
+    return;
+  }
+  const s = ++run.seq;
+  for (const L of links.values()) if (L.isOpen) ltPeer(run, L); // include peers that connect later
+  for (const [pid, P] of run.peers) {
+    const L = links.get(pid), up = !!(L && L.isOpen);
+    if (!up) { if (P.up) { P.up = false; P.drops++; P.downSince = t; } P.w.down = true; continue; }
+    if (!P.up) { P.up = true; P.downMs += t - P.downSince; P.downSince = 0; P.lastRx = 0; }
+    const k = L.rtdc && L.rtdc.readyState === 'open' ? 'u' : 'r';
+    if (rtSend(L, k, { t: 'lp', id: run.id, s, p: LT_PAD })) { P.sent++; P.w.sent++; P.pend.set(s, t); }
+  }
+  if (s % (LT_RATE * 5) === 0) for (const P of run.peers.values()) for (const [q, pt] of P.pend) { if (t - pt > 5000) P.pend.delete(q); else break; }
+  if (t >= run.nextWin) { run.nextWin += run.win * 1000; for (const P of run.peers.values()) ltCloseWin(P); }
+  if (s % LT_RATE === 0) renderLtStatus(run, t);
+}
+function ltCloseWin(P) {
+  const w = P.w, a = w.rtts.sort((x, y) => x - y), p95 = pct(a, .95);
+  const loss = w.sent ? Math.max(0, (1 - w.got / w.sent) * 100) : null;
+  const c = w.down || (w.sent && !w.got) ? 'x' : (p95 != null && p95 >= 100) || (loss != null && loss >= 3) ? '^' : '.';
+  if (c !== '.') P.bad++;
+  P.tl.push(c);
+  P.w = newWin();
+}
+function onLtMsg(L, k, m) {
+  if (m.t === 'lp') {
+    rtSend(L, k, { t: 'lq', id: m.id, s: m.s });
+    const P = ltRunning() && lt.id === m.id && lt.peers.get(L.peerId);
+    if (P) { const t = now(); if (P.lastRx) { const g = t - P.lastRx; if (g > P.maxGap) P.maxGap = g; if (g > 250) P.stalls++; } P.lastRx = t; }
+  } else {
+    if (!lt || lt.id !== m.id || lt.done) return;
+    const P = lt.peers.get(L.peerId), pt = P && P.pend.get(m.s);
+    if (pt == null) return;
+    P.pend.delete(m.s);
+    const rtt = now() - pt;
+    P.got++; P.w.got++; P.rtts.push(rtt); P.w.rtts.push(rtt);
+  }
+}
+function renderLtStatus(run, t) {
+  const ps = [...run.peers.values()];
+  $('ltStatus').textContent = `計測中 ${mmss((t - run.start) / 1000)} / ${mmss(run.dur)}｜相手 ${ps.length} 台｜切断 ${ps.reduce((n, P) => n + P.drops, 0)} 回` +
+    `｜不調の区間 ${ps.reduce((n, P) => n + P.bad, 0)}｜このページを前面のままにしてください`;
+}
+function stopLt(id) { if (ltRunning() && lt.id === id && !lt.ending) lt.dur = 0; }
+function finishLt(run) {
+  run.done = true;
+  try { wakeLock && wakeLock.release(); } catch {} wakeLock = null;
+  const t = now(), rows = [];
+  for (const P of run.peers.values()) {
+    if (!P.up) P.downMs += t - P.downSince;
+    if (P.w.sent || P.w.down) ltCloseWin(P);
+    const a = P.rtts.sort((x, y) => x - y);
+    rows.push({ to: P.name, sent: P.sent, got: P.got, loss: P.sent ? Math.max(0, (1 - P.got / P.sent) * 100) : null,
+      p50: pct(a, .5), p95: pct(a, .95), p99: pct(a, .99), max: a.length ? a[a.length - 1] : null,
+      stalls: P.stalls, maxGap: Math.round(P.maxGap), drops: P.drops, downMs: Math.round(P.downMs), lost: !P.up, bad: P.bad, wins: P.tl.length, tl: P.tl.join('').slice(0, 240) });
+  }
+  const msg = { t: 'ltres', id: run.id, from: me.id, name: me.name, dur: Math.round(run.ran || 0), win: run.win, tickGap: Math.round(run.maxTickGap),
+    hidden: run.hid || document.hidden, sig: run.sigDrops, rows };
+  seenFlood.add('lr' + run.id + me.id);
+  for (const L of links.values()) if (L.isOpen) L.send(msg);
+  storeLtResult(msg);
+  $('ltStatus').textContent = `完了（${mmss(msg.dur)}）。他の端末の結果も届き次第表示されます`;
+  log(`長時間テスト完了（${mmss(msg.dur)}）: 切断 ${rows.reduce((n, r) => n + r.drops, 0)} 回 / 不調の区間 ${rows.reduce((n, r) => n + r.bad, 0)}`, 'ok');
+}
+function cleanLt(m) {
+  const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), sent: num(r.sent) || 0, got: num(r.got) || 0,
+    loss: num(r.loss), p50: num(r.p50), p95: num(r.p95), p99: num(r.p99), max: num(r.max), stalls: num(r.stalls) || 0, maxGap: num(r.maxGap) || 0,
+    drops: num(r.drops) || 0, downMs: num(r.downMs) || 0, lost: !!r.lost, bad: num(r.bad) || 0, wins: num(r.wins) || 0, tl: txt(r.tl).replace(/[^.^x]/g, '').slice(0, 240) }));
+  return { t: 'ltres', id: m.id, from: m.from, name: cleanName(m.name), dur: num(m.dur) || 0, win: num(m.win) || 60, tickGap: num(m.tickGap) || 0,
+    hidden: !!m.hidden, sig: num(m.sig) || 0, rows };
+}
+function storeLtResult(m) {
+  if (!ltResults.has(m.id)) ltResults.set(m.id, new Map());
+  ltResults.get(m.id).set(m.from, m);
+  ltLatest = m.id;
+  renderLt();
+}
+const TL_HTML = { '.': '<b class="ok">·</b>', '^': '<b class="warn">▲</b>', x: '<b class="ng">×</b>' };
+function renderLt() {
+  const res = ltResults.get(ltLatest);
+  if (!res) return;
+  let h = '<tr><th>端末 → 相手</th><th>受信率</th><th>p50</th><th>p95</th><th>p99</th><th>最大</th><th>途切れ</th><th>切断</th><th>不通</th><th>経過</th></tr>';
+  for (const m of [...res.values()].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!m.rows.length) h += `<tr><td>${esc(m.name)}</td><td colspan="9" class="hint">直接接続なし</td></tr>`;
+    for (const r of m.rows) {
+      h += `<tr><td>${esc(m.name)} → ${esc(r.to)}</td><td>${r.sent && r.loss != null ? (100 - r.loss).toFixed(1) + '%' : '-'}</td><td>${f0(r.p50)}</td><td>${f0(r.p95)}</td><td>${f0(r.p99)}</td><td>${f0(r.max)}</td>
+        <td>${r.stalls}${r.maxGap > 250 ? ` <span class="hint">(最大${f0(r.maxGap)})</span>` : ''}</td>
+        <td class="${r.lost ? 'ng' : r.drops ? 'warn' : ''}">${r.drops} 回${r.lost ? '（復帰せず）' : ''}</td><td>${r.downMs ? (r.downMs / 1000).toFixed(1) + ' 秒' : '-'}</td>
+        <td class="mono">${[...r.tl].map(c => TL_HTML[c] || '').join('')}</td></tr>`;
+    }
+    if (m.hidden || m.tickGap > 1000) h += `<tr><td colspan="10" class="warn">${esc(m.name)}: ${m.hidden ? '計測中に画面が非表示になりました。' : ''}送信タイマーが最大 ${f0(m.tickGap)}ms 止まりました（この端末が関わる行は参考値）</td></tr>`;
+    if (m.sig) h += `<tr><td colspan="10" class="hint">${esc(m.name)}: シグナリングサーバーとの接続が ${m.sig} 回切れました（P2P 接続には影響しませんが、再接続時に必要です）</td></tr>`;
+  }
+  h += `<tr><td colspan="10" class="hint">単位: ms。経過は ${[...res.values()][0].win} 秒ごと。</td></tr>`;
+  $('ltTable').innerHTML = h;
+}
+// Verdict for the whole room, in the same format as an auto-test result (so it is saved, shared and comparable).
+function buildLongResult(id) {
+  const map = ltResults.get(id) || new Map(), res = [...map.values()];
+  const rows = res.flatMap(x => x.rows.map(r => Object.assign({ from: x.name }, r)));
+  const missing = onlineOthers().filter(([pid]) => !map.has(pid)).map(([, m]) => m.name);
+  const bgs = res.filter(x => x.hidden || x.tickGap > 1000).map(x => x.name);
+  const mx = f => Math.max(0, ...rows.map(r => r[f] || 0));
+  const pair = r => [r.from, r.to].sort().join('⇄');
+  const lost = [...new Set(rows.filter(r => r.lost).map(pair))], dropped = [...new Set(rows.filter(r => r.drops).map(pair))];
+  // slow/lossy windows only: a drop that recovered is judged by its downtime, not by the windows it touched
+  const badFrac = Math.max(0, ...rows.map(r => r.wins ? (r.tl.match(/\^/g) || []).length / r.wins : 0));
+  const dur = Math.max(0, ...res.map(x => x.dur)), downFrac = Math.max(0, ...rows.map(r => r.downMs / 1000)) / Math.max(1, Math.max(0, ...res.map(x => x.dur))), p95 = mx('p95'), loss = mx('loss'), gap = mx('maxGap');
+  const notes = [];
+  if (lost.length) notes.push(`復帰しなかった接続: ${lost.join(', ')}`);
+  if (dropped.length) notes.push(`途中で切断: ${dropped.join(', ')}（最長不通 ${(mx('downMs') / 1000).toFixed(1)} 秒）`);
+  if (badFrac > 0) notes.push(`遅延・ロスの出た区間が最大 ${(badFrac * 100).toFixed(0)}%`);
+  if (gap > 1000) notes.push(`受信が最大 ${(gap / 1000).toFixed(1)} 秒止まった`);
+  if (bgs.length) notes.push(`画面が非表示/停止した端末あり（${bgs.join(', ')}）→ 参考値`);
+  if (missing.length) notes.push(`結果なし: ${missing.join(', ')}`);
+  const status = !rows.length ? 'na' : lost.length || loss >= 10 || badFrac > 0.2 || downFrac > 0.05 ? 'ng' : notes.length ? 'cond' : 'ok';
+  const base = `${mmss(dur)}・${res.length} 台｜最悪の組: p95 ${f0(p95)}ms / ロス ${loss.toFixed(1)}%`;
+  const caps = [
+    { key: 'long', title: '長時間の安定性（ゲーム 1 回分）', status, reason: !rows.length ? '相手がいないため未検証' : base + (notes.length ? '｜' + notes.join('｜') : '｜切断・不調なし') },
+    { key: 'longdrop', title: '長時間中の切断と自動復帰', status: !rows.length ? 'na' : lost.length ? 'ng' : dropped.length ? 'cond' : 'ok',
+      reason: !rows.length ? '未検証' : lost.length ? `復帰しなかった: ${lost.join(', ')}` : dropped.length ? `${dropped.length} 組で切断 → すべて自動復帰（最長不通 ${(mx('downMs') / 1000).toFixed(1)} 秒）` : '切断なし' },
+  ];
+  const steps = rows.slice(0, 58).map(r => ({ title: `${r.from} → ${r.to}`, status: r.lost ? 'fail' : r.drops || r.bad || r.maxGap > 1000 ? 'warn' : 'pass',
+    detail: `受信率 ${r.loss != null ? (100 - r.loss).toFixed(1) : '-'}% / p95 ${f0(r.p95)}ms / 最大 ${f0(r.max)}ms / 途切れ ${r.stalls} 回（最大 ${f0(r.maxGap)}ms）/ 切断 ${r.drops} 回（不通 ${(r.downMs / 1000).toFixed(1)} 秒）/ 経過 ${r.tl.replace(/\./g, '·').replace(/\^/g, '▲').replace(/x/g, '×')}` }));
+  return JSON.parse(maskIps(JSON.stringify({
+    v: 1, id: 'L' + id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: 'long', by: me.name,
+    device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
+    room, participants: [me.name, ...res.filter(x => x.from !== me.id).map(x => x.name)], steps, caps,
+    metrics: { long: { dur, devices: res.length, p95, loss, maxGap: gap, badFrac, lost, dropped, bg: bgs, missing, rows } },
+  })));
+}
+async function startLongAll(opts = {}) {
+  if (ltRunning() || (auto && auto.running)) return null;
+  const m = { t: 'ltstart', id: rand(8), dur: opts.dur || Number($('ltDur').value), win: opts.win || 60, fromName: me.name };
+  seenFlood.add('ls' + m.id);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+  startLt(m);
+  const run = lt;
+  if (!run || run.id !== m.id) return null;
+  run.mine = true;
+  await waitFor(() => run.done, (m.dur + 10) * 1000, 300);
+  await waitFor(() => ltResults.get(m.id) && ltResults.get(m.id).size >= 1 + onlineOthers().length, 12000, 300);
+  const result = buildLongResult(m.id);
+  saveResult(result);
+  seenFlood.add('ar' + result.id);
+  for (const L of links.values()) if (L.isOpen) L.send({ t: 'autores', result });
+  showResult(result, $('ltSummary'));
+  lastLong = result;
+  $('ltStatus').textContent = `完了（${mmss(result.metrics.long.dur)}）。結果を保存し、参加者にも共有しました（「保存した結果」から .md で書き出せます）`;
+  return result;
+}
+let lastLong = null;
+$('ltBtn').onclick = () => startLongAll();
+$('ltStop').onclick = () => {
+  if (!ltRunning()) return;
+  const m = { t: 'ltstop', id: lt.id };
+  seenFlood.add('lx' + m.id);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+  stopLt(m.id);
+};
+setInterval(() => {
+  const busy = ltRunning() || !!(auto && auto.running) || !!(rt && !rt.done);
+  $('ltBtn').disabled = !enabled || busy; $('ltStop').disabled = !ltRunning();
+}, 500);
+
 // ---------- Background / sleep detection ----------
 let lastBeat = now();
 setInterval(() => {
@@ -1178,7 +1430,7 @@ setInterval(() => {
   if (g > 1500) log(`処理が ${(g / 1000).toFixed(1)} 秒止まっていました（バックグラウンド・画面オフ・スリープ）`, 'warn');
   lastBeat = now();
 }, 250);
-document.addEventListener('visibilitychange', () => { if (document.hidden && rt && !rt.done) rt.hid = true; });
+document.addEventListener('visibilitychange', () => { if (document.hidden && rt && !rt.done) rt.hid = true; if (document.hidden && ltRunning()) lt.hid = true; });
 document.addEventListener('visibilitychange', () => log(document.hidden ? 'ページが非表示になりました（バックグラウンド）' : 'ページが再表示されました'));
 
 async function speedTest(L, mbArg) {
@@ -1481,6 +1733,20 @@ async function loopback({ iceServers, policy, timeout }) {
   } catch (e) { return { ok: false, err: e.message }; }
   finally { a.close(); b.close(); }
 }
+// Each TURN URL is tried on its own, so the report shows which transports get through this network
+// (UDP is fastest; TCP / TLS on 443 are the fallbacks when UDP is blocked).
+async function turnCheck() {
+  const list = [];
+  for (const s of CFG.ice) for (const u of [].concat(s.urls || [])) if (/^turns?:/i.test(u))
+    list.push({ label: /^turns:/i.test(u) ? 'TLS' : /transport=tcp/i.test(u) ? 'TCP' : 'UDP', srv: { urls: u, username: s.username, credential: s.credential } });
+  const per = await Promise.all(list.slice(0, 8).map(async x => {
+    const r = await loopback({ iceServers: [x.srv], policy: 'relay', timeout: 10000 });
+    return { label: x.label, ok: !!r.ok, ms: r.ok ? r.ms : null };
+  }));
+  const good = per.filter(x => x.ok);
+  return { ok: good.length > 0, ms: good.length ? Math.min(...good.map(x => x.ms)) : null, per };
+}
+const turnText = t => t.per.map(x => `${x.label} ${x.ok ? '○ ' + x.ms + 'ms' : '×'}`).join(' / ');
 function myLinksView() {
   const ls = {};
   for (const [id, L] of links) ls[id] = { r: L.isOpen ? L.route : 'c', rtt: L.rtt };
@@ -1548,7 +1814,7 @@ function renderSteps() {
 function renderRemoteAuto() {
   const busy = remoteAuto && now() - remoteAuto.at < 40000;
   $('autoWho').textContent = busy ? `${remoteAuto.by} が自動テスト実行中: ${remoteAuto.text}` : '';
-  $('autoBtn').disabled = !!busy || !!(auto && auto.running);
+  $('autoBtn').disabled = !!busy || !!(auto && auto.running) || ltRunning();
 }
 setInterval(renderRemoteAuto, 2000);
 
@@ -1593,8 +1859,10 @@ async function runAuto() {
     st = stepStart('TURN 中継（直接つながらない時の保険）');
     if (!d.hasTurn) { M.turn = null; stepEnd(st, 'skip', '未設定（「設定」で TURN サーバーを入れると判定します）'); }
     else {
-      M.turn = await loopback({ iceServers: CFG.ice, policy: 'relay', timeout: 12000 });
-      stepEnd(st, M.turn.ok ? 'pass' : 'fail', M.turn.ok ? `TURN 経由で送受信 OK（${M.turn.ms}ms）` : 'TURN 経由で接続できません（URL・認証情報・ポートを確認）');
+      M.turn = await turnCheck();
+      const all = M.turn.per.every(x => x.ok);
+      stepEnd(st, !M.turn.ok ? 'fail' : all ? 'pass' : 'warn', (M.turn.ok ? 'TURN 経由で送受信 OK' : 'TURN 経由で接続できません（URL・認証情報・ポートを確認）') + `｜経路別: ${turnText(M.turn)}` +
+        (M.turn.ok && !all ? '｜使える経路だけで中継されます' : ''));
     }
 
     // ---- with peers ----
@@ -1697,7 +1965,7 @@ async function runAuto() {
   log('自動テスト完了', 'ok');
   renderRemoteAuto();
 }
-$('autoBtn').onclick = () => { if (!(auto && auto.running)) runAuto(); };
+$('autoBtn').onclick = () => { if (!(auto && auto.running) && !ltRunning()) runAuto(); };
 
 // ---- judge: what can be used ----
 function deriveCaps(M) {
@@ -1721,7 +1989,7 @@ function deriveCaps(M) {
   else if (d && !d.stunCount) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN 未設定のため不可');
   else add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', d && d.symmetric ? 'cond' : 'na',
     d && d.symmetric ? '対称型 NAT のため相手次第。別ネットワークの端末を入れて再テストを' : '別ネットワークの相手とは未検証（STUN は応答あり）');
-  if (M.turn) add('turn', 'TURN 中継（直接つながらない時の保険）', M.turn.ok ? 'ok' : 'ng', M.turn.ok ? 'TURN 経由の送受信に成功' : 'TURN 経由で接続できない');
+  if (M.turn) add('turn', 'TURN 中継（直接つながらない時の保険）', M.turn.ok ? 'ok' : 'ng', (M.turn.ok ? 'TURN 経由の送受信に成功' : 'TURN 経由で接続できない') + (M.turn.per ? `（${turnText(M.turn)}）` : ''));
   else add('turn', 'TURN 中継（直接つながらない時の保険）', ms && ms.R ? 'ok' : 'na', ms && ms.R ? '中継経由の接続あり' : '未設定');
   if (peers >= 2 && ms) add('mesh', '3 台以上の同時接続', ms.ok === ms.pairs ? 'ok' : M.sync && M.sync.ok ? 'cond' : 'ng',
     ms.ok === ms.pairs ? `${peers + 1} 台が全員と直接接続` : M.sync && M.sync.ok ? `一部の組（${ms.failed.join(', ')}）は他の端末経由で同期` : '直接つながらない組があり同期も不完全');
@@ -1755,6 +2023,7 @@ function deriveCaps(M) {
   } else add('recover', '切断からの自動復帰', 'na', '未検証');
   add('clock', '時刻合わせ（タイマー・どちらが先か判定）', M.clock == null ? 'na' : M.clock < 20 ? 'ok' : 'cond',
     M.clock == null ? '未検証' : M.clock < 20 ? `時計のずれ最大 ${f0(M.clock)}ms` : `時計のずれ最大 ${f0(M.clock)}ms → ゲーム側で補正が必要`);
+  add('long', '長時間の安定性（ゲーム 1 回分）', 'na', '自動テストは 1〜3 分のみ。「長時間テスト」で確認');
   add('bg', 'スマホのバックグラウンド・画面オフ中の動作', 'na', '自動では判定できません。プレイグラウンドのリアルタイムテスト中にアプリを切り替えて確認');
   add('av', '音声・ビデオ通話', 'na', 'このツールでは未検証（データ通信のみ）');
   return C;
@@ -1805,7 +2074,7 @@ function download(name, text, type) {
 function toMarkdown(r) {
   const L = [`# P2P 自動テスト結果 ${new Date(r.ts).toLocaleString()}`, '',
     `- 条件: ${r.label || '(未記入)'}`, `- 実行: ${r.by}（${r.device.page}）`, `- 参加: ${r.participants.length} 台（${r.participants.join(', ')}）`,
-    `- ルーム: ${r.room || '-'} / プロファイル: ${(PROFILES[r.profile] || {}).name || r.profile}`, ''];
+    `- ルーム: ${r.room || '-'} / プロファイル: ${(PROFILES[r.profile] || {}).name || (r.profile === 'long' ? '長時間テスト' : r.profile)}`, ''];
   for (const [st, title] of CAP_GROUPS) {
     const items = r.caps.filter(c => c.status === st);
     if (!items.length) continue;

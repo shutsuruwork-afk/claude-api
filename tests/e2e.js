@@ -12,12 +12,12 @@ const SYNCED = n => new RegExp(`${n} 台すべて同期済み`);
 let browser, opened = [], errors = [], roomSeq = 0;
 const newRoom = () => `t${Date.now().toString(36)}-${++roomSeq}`;
 
-async function open(name, { room, url, history } = {}) {
+async function open(name, { room, url, history, cfg } = {}) {
   const ctx = await browser.newContext();
   await ctx.addInitScript(([cfg, hist]) => {
     if (!localStorage.getItem('p2pt.cfg')) localStorage.setItem('p2pt.cfg', JSON.stringify(cfg));
     if (hist && !localStorage.getItem('p2pt.seeded')) { localStorage.setItem('p2pt.history', hist); localStorage.setItem('p2pt.seeded', '1'); }
-  }, [CFG(name), history || null]);
+  }, [Object.assign(CFG(name), cfg || {}), history || null]);
   const page = await ctx.newPage();
   page.on('pageerror', e => errors.push(`${name}: ${e.message}`));
   page.on('dialog', d => d.accept());
@@ -206,6 +206,56 @@ test('手動モード（SDP コピペ）だけで 2 台が同期する', async (
   await waitSynced([A, B], 2);
   await A.click('#grid > div:nth-child(2)');
   await B.waitForFunction(() => document.querySelector('#grid > div:nth-child(2)').style.background !== '', null, { timeout: 10000 });
+});
+
+test('長時間テスト: 切断なしなら ✅、結果が全員に保存される', async () => {
+  const [A, B, C] = await group(3);
+  const r = await A.evaluate(() => startLongAll({ dur: 8, win: 2 }));
+  const cap = k => r.caps.find(c => c.key === k);
+  assert.strictEqual(cap('long').status, 'ok', JSON.stringify(r.caps));
+  assert.strictEqual(cap('longdrop').status, 'ok');
+  assert.strictEqual(r.metrics.long.rows.length, 6); // 3 台 × 相手 2
+  for (const row of r.metrics.long.rows) assert.ok(row.sent > 100 && row.loss < 3 && row.wins >= 3 && /^\.+$/.test(row.tl), JSON.stringify(row));
+  for (const p of [B, C]) await p.waitForFunction(id => loadHist().some(x => x.id === id && x.received) && document.querySelector('#ltTable').rows.length > 6, r.id, { timeout: 10000 });
+});
+
+test('長時間テスト: 途中の切断と復帰を記録し ⚠️ になる・中止できる', async () => {
+  const [A, B, C] = await group(3);
+  const bId = await B.evaluate(() => me.id);
+  const done = A.evaluate(() => startLongAll({ dur: 120, win: 2 }));
+  await A.waitForTimeout(3000);
+  await A.evaluate(id => links.get(id).close('テスト'), bId);
+  await A.waitForFunction(id => links.get(id) && links.get(id).isOpen, bId, { timeout: 20000 });
+  await A.waitForTimeout(18000);
+  await C.click('#ltStop'); // 他の端末からでも中止できる
+  const r = await done;
+  const L = r.metrics.long;
+  assert.ok(L.dur < 60, 'dur ' + L.dur);
+  assert.strictEqual(r.caps.find(c => c.key === 'longdrop').status, 'cond', JSON.stringify(r.caps));
+  assert.strictEqual(r.caps.find(c => c.key === 'long').status, 'cond');
+  assert.strictEqual(L.dropped.length, 1);
+  const ab = L.rows.find(x => x.from === 'A' && x.to === 'B');
+  assert.ok(ab.drops === 1 && !ab.lost && ab.downMs > 0 && ab.tl.includes('x'), JSON.stringify(ab));
+  assert.strictEqual(L.rows.find(x => x.from === 'A' && x.to === 'C').drops, 0);
+});
+
+test('TURN: 経路別に確認し、中継のみでも同期する', async () => {
+  const Turn = require('node-turn');
+  const srv = new Turn({ listeningPort: 3479, listeningIps: ['127.0.0.1'], relayIps: ['127.0.0.1'], authMech: 'long-term', credentials: { u: 'p' }, debugLevel: 'OFF' });
+  srv.start();
+  try {
+    const ice = [{ urls: 'turn:127.0.0.1:3479', username: 'u', credential: 'p' }, { urls: 'turn:127.0.0.1:3480?transport=tcp', username: 'u', credential: 'p' }];
+    const room = newRoom();
+    const mk = name => open(name, { room, cfg: { ice, relayOnly: true } });
+    const A = await mk('A');
+    await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+    const B = await mk('B');
+    await waitSynced([A, B], 2);
+    await A.waitForFunction(() => [...links.values()].some(L => L.route === 'R'), null, { timeout: 10000 });
+    const t = await A.evaluate(() => turnCheck());
+    assert.deepStrictEqual(t.per.map(x => [x.label, x.ok]), [['UDP', true], ['TCP', false]]);
+    assert.strictEqual(t.ok, true);
+  } finally { srv.stop(); }
 });
 
 test('自動テスト（クイック）が 3 台で完走し、結果が全員に保存される', async () => {
