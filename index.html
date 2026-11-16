@@ -6,116 +6,174 @@
 <title>P2P 接続テスト</title>
 <style>
   :root {
-    --bg: #f6f7f9; --fg: #1d2129; --muted: #667085; --card: #fff;
+    --bg: #f6f7f9; --fg: #1d2129; --muted: #667085; --card: #fff; --sub: #eef0f3;
     --border: #d6dae1; --accent: #2563eb; --ok: #15803d; --ng: #b91c1c; --warn: #b45309;
+    --ok-bg: #dcfce7; --ng-bg: #fee2e2; --warn-bg: #fef3c7;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #12151a; --fg: #e6e8eb; --muted: #9aa3af; --card: #1b2028;
+      --bg: #12151a; --fg: #e6e8eb; --muted: #9aa3af; --card: #1b2028; --sub: #232a34;
       --border: #2e3540; --accent: #60a5fa; --ok: #4ade80; --ng: #f87171; --warn: #fbbf24;
+      --ok-bg: #14321f; --ng-bg: #3a1717; --warn-bg: #3a2c0c;
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
     font: 15px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
-  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 64px; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
-  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
   p.lead { color: var(--muted); margin: 0 0 20px; }
-  section { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  section, details.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
     padding: 16px; margin-bottom: 16px; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-  .tabs button[aria-selected="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
-    background: var(--card); color: var(--fg); cursor: pointer; }
+  details.card > summary { cursor: pointer; font-weight: 600; }
+  details.card[open] > summary { margin-bottom: 12px; }
+  button { font: inherit; font-size: 14px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); color: var(--fg); cursor: pointer; white-space: nowrap; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { padding: 3px 8px; font-size: 12px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
-  input, textarea { font: inherit; width: 100%; padding: 8px 10px; border-radius: 8px;
+  input, textarea, select { font: inherit; padding: 7px 10px; border-radius: 8px;
     border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
-  textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; min-height: 90px; }
+  textarea { width: 100%; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; min-height: 80px; }
+  label.blk { display: block; color: var(--muted); font-size: 13px; margin-top: 10px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
-  .row > input { flex: 1 1 200px; width: auto; }
-  .id { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; word-break: break-all; }
-  .status { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 14px; }
-  .status dt { color: var(--muted); }
-  .status dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .row > input { flex: 1 1 180px; min-width: 0; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .hint { color: var(--muted); font-size: 13px; }
   .ok { color: var(--ok); } .ng { color: var(--ng); } .warn { color: var(--warn); }
-  #chat { height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
+  .hidden { display: none !important; }
+  .banner { padding: 10px 12px; border-radius: 8px; font-weight: 600; margin-bottom: 10px; background: var(--sub); }
+  .banner.ok { background: var(--ok-bg); } .banner.ng { background: var(--ng-bg); } .banner.warn { background: var(--warn-bg); }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 13px; width: 100%; }
+  th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  table.matrix td.c { text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  table.matrix td.c small { display: block; color: var(--muted); font-size: 11px; line-height: 1.1; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; max-width: 420px; margin: 8px 0; }
+  .grid div { aspect-ratio: 1; border-radius: 3px; background: var(--sub); cursor: pointer; }
+  #chat { height: 150px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
     padding: 8px; background: var(--bg); font-size: 14px; }
-  #chat .me { color: var(--accent); } #chat .sys { color: var(--muted); font-style: italic; }
-  #log { height: 200px; overflow-y: auto; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+  #log { height: 220px; overflow-y: auto; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
     background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px;
     white-space: pre-wrap; word-break: break-all; }
-  ol { padding-left: 1.3em; margin: 0 0 8px; } ol li { margin-bottom: 2px; }
-  .hidden { display: none; }
-  .hint { color: var(--muted); font-size: 13px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 14px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+  .legend span { margin-right: 12px; }
 </style>
 </head>
 <body>
 <main>
   <h1>P2P 接続テスト (WebRTC)</h1>
-  <p class="lead">2台の端末（または2つのブラウザ）でこのページを開き、WebRTC DataChannel で直接つながるか確認します。</p>
+  <p class="lead">複数の端末で同じ「ルーム」に入り、全員が WebRTC で直接つながり、共有データが一致（同期）するかを確認します。</p>
 
-  <div class="tabs" role="tablist">
-    <button role="tab" aria-selected="true" data-tab="peerjs">かんたん (PeerJS)</button>
-    <button role="tab" aria-selected="false" data-tab="manual">手動 (サーバーなし)</button>
-  </div>
-
-  <section id="tab-peerjs">
-    <h2>PeerJS モード</h2>
-    <ol class="hint">
-      <li>両方の端末でこのページを開く</li>
-      <li>片方の「自分の ID」をもう片方の入力欄に貼り付けて「接続」</li>
-    </ol>
-    <p class="hint">シグナリング（最初の ID 交換）のみ PeerJS の公開サーバーを使い、データ本体は P2P で流れます。</p>
-    <div class="row">自分の ID: <span class="id" id="myId">取得中…</span>
-      <button id="copyId" disabled>コピー</button></div>
-    <div class="row">
-      <input id="remoteId" placeholder="相手の ID" autocomplete="off">
-      <button class="primary" id="connectBtn" disabled>接続</button>
-    </div>
-  </section>
-
-  <section id="tab-manual" class="hidden">
-    <h2>手動モード（外部サーバー不要）</h2>
-    <p class="hint">SDP をコピー＆ペーストで交換します（チャットやメールで送る）。STUN 以外の外部サーバーを使いません。</p>
-    <div class="row">
-      <button class="primary" id="mkOffer">A: オファーを作成</button>
-      <span class="hint">← 接続を開始する側</span>
-    </div>
-    <label class="hint" for="localSdp">自分の SDP（相手に送る）</label>
-    <textarea id="localSdp" readonly></textarea>
-    <div class="row"><button id="copySdp">コピー</button></div>
-    <label class="hint" for="remoteSdp">相手の SDP（ここに貼る）</label>
-    <textarea id="remoteSdp"></textarea>
-    <div class="row">
-      <button class="primary" id="applyRemote">相手の SDP を適用</button>
-      <span class="hint">B は A のオファーを貼って適用 → 出てきたアンサーを A に返す。A はそれを貼って適用。</span>
-    </div>
-  </section>
-
+  <!-- ===== Room ===== -->
   <section>
-    <h2>接続状態</h2>
-    <dl class="status">
-      <dt>シグナリング</dt><dd id="sSig">-</dd>
-      <dt>ICE</dt><dd id="sIce">-</dd>
-      <dt>接続</dt><dd id="sConn">-</dd>
-      <dt>DataChannel</dt><dd id="sDc">-</dd>
-      <dt>経路</dt><dd id="sRoute">-</dd>
-      <dt>RTT</dt><dd id="sRtt">-</dd>
-      <dt>自分の候補</dt><dd id="sCands">-</dd>
+    <h2>ルーム</h2>
+    <div class="row">
+      <input id="room" placeholder="ルーム名" autocomplete="off">
+      <button class="primary" id="joinBtn">参加</button>
+      <button id="leaveBtn" disabled>退出</button>
+      <button id="shareBtn">招待 URL をコピー</button>
+    </div>
+    <dl class="kv">
+      <dt>自分</dt><dd><span class="dot" id="myDot"></span><span id="myName"></span> <span class="hint" id="myId"></span></dd>
+      <dt>シグナリング</dt><dd id="sigState">未接続</dd>
+      <dt>役割</dt><dd id="roleState">-</dd>
     </dl>
+    <p class="hint">全員が同じルーム名で参加すると、自動的に全員同士（フルメッシュ）で接続します。最初の接続情報の交換だけ PeerJS のシグナリングサーバーを使い、データは端末間で直接流れます。</p>
   </section>
 
+  <!-- ===== Sync status ===== -->
   <section>
-    <h2>メッセージ</h2>
+    <h2>同期状況（全端末）</h2>
+    <div class="banner" id="syncBanner">ルームに参加してください</div>
+    <div class="scroll"><table class="matrix" id="matrix"></table></div>
+    <p class="hint legend">
+      <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> NAT越え直接</span><span><b class="warn">R</b> TURN中継</span>
+      <span>… 接続中</span><span><b class="ng">×</b> 失敗/再試行中</span><span>· 直接接続なし（他端末経由で同期）</span>
+    </p>
+    <p class="hint">各行は「その端末から見た」接続状況です。ハッシュが全員一致していれば共有データは同期しています。直接つながらない組み合わせがあっても、他の端末を経由して同期します。</p>
+  </section>
+
+  <!-- ===== Shared state ===== -->
+  <section>
+    <h2>共有データ</h2>
+    <p class="hint">マスをクリックすると自分の色で塗られ、全端末に反映されます（同じマスへの同時書き込みは全員が同じ結果になるよう解決されます）。</p>
+    <div class="grid" id="grid"></div>
+    <div class="row">
+      <button class="primary" id="burstBtn" disabled>一斉書き込みテスト</button>
+      <select id="burstN"><option value="50">各50回</option><option value="200" selected>各200回</option><option value="1000">各1000回</option></select>
+      <button id="clearBtn" disabled>全消去</button>
+    </div>
+    <div id="burstResult" class="hint"></div>
+    <h2 style="margin-top:16px">チャット（共有）</h2>
     <div id="chat"></div>
     <div class="row">
       <input id="msg" placeholder="メッセージ" disabled autocomplete="off">
       <button id="send" disabled>送信</button>
-      <button id="ping" disabled>Ping ×10</button>
     </div>
   </section>
+
+  <!-- ===== Direct links ===== -->
+  <section>
+    <h2>自分の直接接続</h2>
+    <div class="scroll"><table id="links"></table></div>
+    <div class="row">
+      <label class="hint" for="tpSize">速度テストのサイズ</label>
+      <select id="tpSize"><option value="1">1 MB</option><option value="8" selected>8 MB</option><option value="32">32 MB</option></select>
+      <span class="hint">「切断」は接続を意図的に切って自動再接続を確認します。</span>
+    </div>
+  </section>
+
+  <!-- ===== Diagnostics ===== -->
+  <details class="card">
+    <summary>ネットワーク診断（NAT の種類・STUN/TURN 確認）</summary>
+    <p class="hint">この端末単体で、外部からどう見えるか調べます。結果は相手には送信されません。</p>
+    <div class="row"><button id="diagBtn">診断を実行</button></div>
+    <dl class="kv" id="diagOut"></dl>
+  </details>
+
+  <!-- ===== Manual ===== -->
+  <details class="card" id="manualBox">
+    <summary>サーバーなしで接続（手動 SDP 交換）</summary>
+    <p class="hint">PeerJS サーバーが使えない環境向け。SDP をコピー＆ペーストで交換します（チャットやメールで送る）。つながった相手は上の同期テストにも参加します。</p>
+    <div class="row">
+      <button class="primary" id="mkOffer">A: オファーを作成</button>
+      <span class="hint">← 接続を開始する側</span>
+    </div>
+    <label class="blk" for="localSdp">自分の SDP（相手に送る）</label>
+    <textarea id="localSdp" readonly></textarea>
+    <div class="row"><button id="copySdp">コピー</button></div>
+    <label class="blk" for="remoteSdp">相手の SDP（ここに貼る）</label>
+    <textarea id="remoteSdp"></textarea>
+    <div class="row">
+      <button class="primary" id="applyRemote">相手の SDP を適用</button>
+      <span class="hint">B は A のオファーを貼って適用 → 出てきたアンサーを A に返す → A が貼って適用。</span>
+    </div>
+  </details>
+
+  <!-- ===== Settings ===== -->
+  <details class="card">
+    <summary>設定（表示名・TURN・シグナリングサーバー）</summary>
+    <label class="blk" for="cfgName">表示名</label>
+    <input id="cfgName" style="width:100%">
+    <label class="blk" for="cfgIce">ICE サーバー（JSON 配列）</label>
+    <textarea id="cfgIce"></textarea>
+    <p class="hint">TURN の例: <code>{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}</code><br>
+      設定はこのブラウザ内（localStorage）にだけ保存されます。リポジトリは公開なので、TURN の認証情報をコミットしないでください。</p>
+    <div class="row"><label><input type="checkbox" id="cfgRelay"> TURN 中継のみ使う（TURN の動作確認用）</label></div>
+    <label class="blk">シグナリングサーバー（空欄なら PeerJS 公開サーバー）</label>
+    <div class="row">
+      <input id="cfgHost" placeholder="host（例: peer.example.com）">
+      <input id="cfgPort" placeholder="port" style="flex:0 1 90px">
+      <input id="cfgPath" placeholder="path（例: /）" style="flex:0 1 120px">
+      <label><input type="checkbox" id="cfgSecure" checked> https/wss</label>
+    </div>
+    <div class="row"><button class="primary" id="cfgSave">保存して再読み込み</button><button id="cfgReset">初期値に戻す</button></div>
+  </details>
 
   <section>
     <h2>ログ</h2>
@@ -125,257 +183,875 @@
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-];
+'use strict';
+// =====================================================================
+// Utilities
+// =====================================================================
 const $ = id => document.getElementById(id);
-const t0 = performance.now();
-
+const now = () => performance.now();
+const T0 = now();
+const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function cyrb53(str, seed = 0) {
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return [h1 >>> 0, h2 >>> 0];
+}
+const colorOf = id => `hsl(${cyrb53(id)[0] % 360} 70% 52%)`;
 function log(msg, cls) {
   const el = $('log');
   const line = document.createElement('div');
   if (cls) line.className = cls;
-  line.textContent = `[${((performance.now() - t0) / 1000).toFixed(2)}s] ${msg}`;
+  line.textContent = `[${((now() - T0) / 1000).toFixed(1)}s] ${msg}`;
   el.appendChild(line);
+  while (el.childNodes.length > 500) el.removeChild(el.firstChild);
   el.scrollTop = el.scrollHeight;
 }
-function chat(text, cls) {
-  const el = $('chat');
-  const line = document.createElement('div');
-  if (cls) line.className = cls;
-  line.textContent = text;
-  el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
-}
-function setStat(id, text, cls) {
-  const el = $(id);
-  el.textContent = text;
-  el.className = cls || '';
-}
-const stateClass = s => ({ connected: 'ok', completed: 'ok', open: 'ok', stable: 'ok',
-  failed: 'ng', closed: 'ng', disconnected: 'warn' }[s] || '');
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
 
-// ---------- Tabs ----------
-document.querySelectorAll('[data-tab]').forEach(btn => btn.addEventListener('click', () => {
-  document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', b === btn));
-  $('tab-peerjs').classList.toggle('hidden', btn.dataset.tab !== 'peerjs');
-  $('tab-manual').classList.toggle('hidden', btn.dataset.tab !== 'manual');
-}));
+// =====================================================================
+// Settings
+// =====================================================================
+const DEFAULT_ICE = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+function defaultName() {
+  const ua = navigator.userAgent;
+  const dev = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Win' : /Linux/.test(ua) ? 'Linux' : '端末';
+  return `${dev}-${rand(3)}`;
+}
+const CFG = Object.assign({ name: defaultName(), ice: DEFAULT_ICE, relayOnly: false, server: null }, store.get('p2pt.cfg', {}));
+store.set('p2pt.cfg', CFG);
+const rtcConfig = () => ({ iceServers: CFG.ice, iceTransportPolicy: CFG.relayOnly ? 'relay' : 'all' });
 
-// ---------- Shared: watch a RTCPeerConnection ----------
-const candTypes = { host: 0, srflx: 0, relay: 0, prflx: 0 };
-function renderCands() {
-  const parts = Object.entries(candTypes).filter(([, n]) => n).map(([k, n]) => `${k}×${n}`);
-  setStat('sCands', parts.join('  ') || '-', candTypes.srflx ? 'ok' : (candTypes.host ? 'warn' : ''));
+$('cfgName').value = CFG.name;
+$('cfgIce').value = JSON.stringify(CFG.ice, null, 1);
+$('cfgRelay').checked = CFG.relayOnly;
+if (CFG.server) {
+  $('cfgHost').value = CFG.server.host || ''; $('cfgPort').value = CFG.server.port || '';
+  $('cfgPath').value = CFG.server.path || ''; $('cfgSecure').checked = CFG.server.secure !== false;
+}
+$('cfgSave').onclick = () => {
+  let ice;
+  try { ice = JSON.parse($('cfgIce').value); if (!Array.isArray(ice)) throw 0; }
+  catch { alert('ICE サーバーは JSON 配列で入力してください'); return; }
+  const host = $('cfgHost').value.trim();
+  store.set('p2pt.cfg', {
+    name: $('cfgName').value.trim() || defaultName(), ice, relayOnly: $('cfgRelay').checked,
+    server: host ? { host, port: Number($('cfgPort').value) || undefined, path: $('cfgPath').value.trim() || '/',
+      secure: $('cfgSecure').checked } : null,
+  });
+  location.reload();
+};
+$('cfgReset').onclick = () => { store.del('p2pt.cfg'); location.reload(); };
+
+// =====================================================================
+// Identity
+// =====================================================================
+const me = { id: 'p' + rand(9), name: CFG.name };
+me.color = colorOf(me.id);
+$('myName').textContent = me.name;
+$('myId').textContent = me.id;
+$('myDot').style.background = me.color;
+if (CFG.relayOnly) log('設定: TURN 中継のみモード', 'warn');
+
+// =====================================================================
+// Shared state (op-based CRDT: every op is kept; state is derived deterministically)
+// =====================================================================
+const GRID = 144;
+const ops = new Map();          // opId -> op
+const originOps = new Map();    // origin -> [op]
+let mySeq = 0, lamport = 0;
+let hashA = 0, hashB = 0;       // XOR of per-op hashes: order independent
+const grid = new Array(GRID).fill(null); // {v, l, o, s}
+const chatOps = [];
+const stampCmp = (a, b) => (a.l - b.l) || (a.o < b.o ? -1 : a.o > b.o ? 1 : 0) || (a.s - b.s);
+
+function stateHash() {
+  return (hashA >>> 0).toString(16).padStart(8, '0') + (hashB >>> 0).toString(16).padStart(8, '0').slice(0, 4);
+}
+function applyOp(op) {
+  if (!op || typeof op.id !== 'string' || ops.has(op.id)) return false;
+  ops.set(op.id, op);
+  if (!originOps.has(op.o)) originOps.set(op.o, []);
+  originOps.get(op.o).push(op);
+  const [a, b] = cyrb53(op.id);
+  hashA ^= a; hashB ^= b;
+  lamport = Math.max(lamport, op.l);
+  if (op.k === 'c') {
+    const cur = grid[op.c];
+    if (op.c >= 0 && op.c < GRID && (!cur || stampCmp(op, cur) > 0)) grid[op.c] = op;
+  } else if (op.k === 'x') {
+    for (let i = 0; i < GRID; i++) if (!grid[i] || stampCmp(op, grid[i]) > 0) grid[i] = op;
+  } else if (op.k === 'm') {
+    chatOps.push(op);
+    chatDirty = true;
+  }
+  scheduleRender(); scheduleStatus();
+  return true;
+}
+function localOp(fields) {
+  const op = Object.assign({ id: `${me.id}:${++mySeq}`, o: me.id, s: mySeq, l: ++lamport }, fields);
+  applyOp(op);
+  floodOps([op], null);
+  return op;
+}
+function floodOps(list, fromLink) {
+  if (!list.length) return;
+  for (const L of links.values()) if (L !== fromLink && L.isOpen) L.sendOps(list);
+}
+function stateVector() {
+  const sv = {};
+  for (const [o, arr] of originOps) {
+    let max = 0; for (const op of arr) if (op.s > max) max = op.s;
+    sv[o] = [arr.length, max];
+  }
+  return sv;
 }
 
-let watchedPc = null;
-function watchPc(pc) {
-  if (!pc || watchedPc === pc) return;
-  watchedPc = pc;
-  const upd = () => {
-    setStat('sSig', pc.signalingState, stateClass(pc.signalingState));
-    setStat('sIce', pc.iceConnectionState, stateClass(pc.iceConnectionState));
-    setStat('sConn', pc.connectionState, stateClass(pc.connectionState));
-  };
-  upd();
-  pc.addEventListener('signalingstatechange', () => { upd(); log('signaling: ' + pc.signalingState); });
-  pc.addEventListener('iceconnectionstatechange', () => {
-    upd(); log('ICE: ' + pc.iceConnectionState, stateClass(pc.iceConnectionState));
-    if (pc.iceConnectionState === 'failed') {
-      log('→ 直接接続できませんでした。両方が対称型NAT/厳しいFWの裏にある可能性があり、TURN サーバーが必要です。', 'ng');
+// =====================================================================
+// Links (one direct WebRTC DataChannel to one peer)
+// =====================================================================
+const links = new Map();      // peerId -> Link (registered)
+const pendingManual = new Set();
+let linkSeq = 0;
+
+class Link {
+  constructor({ peerId, kind, initiator, conn, pc, dc }) {
+    this.n = ++linkSeq;
+    this.peerId = peerId; this.kind = kind; this.initiator = initiator;
+    this.conn = conn; this._pc = pc; this._dc = dc;
+    this.state = 'connecting'; this.createdAt = now(); this.openedAt = 0;
+    this.route = '-'; this.rtt = null; this.closed = false;
+    this.tp = null; this.rx = null; this.tpResult = '';
+    this.iceDiscSince = 0;
+  }
+  get pc() { return this.kind === 'peerjs' ? this.conn && this.conn.peerConnection : this._pc; }
+  get dc() { return this.kind === 'peerjs' ? this.conn && this.conn.dataChannel : this._dc; }
+  get isOpen() { return this.state === 'open' && !this.closed; }
+  get name() { const m = members.get(this.peerId); return m ? m.name : (this.peerId || '?'); }
+  sendRaw(x) {
+    const dc = this.dc;
+    if (!dc || dc.readyState !== 'open') return false;
+    try { dc.send(x); return true; } catch (e) { log(`送信失敗 (${this.name}): ${e.message}`, 'warn'); return false; }
+  }
+  send(obj) { return this.sendRaw(JSON.stringify(obj)); }
+  sendOps(list) { for (let i = 0; i < list.length; i += 200) this.send({ t: 'op', ops: list.slice(i, i + 200) }); }
+  onOpen() {
+    if (this.closed || this.state === 'open') return;
+    this.state = 'open'; this.openedAt = now();
+    const dc = this.dc;
+    if (dc) { dc.binaryType = 'arraybuffer'; dc.bufferedAmountLowThreshold = 1 << 20; }
+    this.send({ t: 'hello', id: me.id, name: me.name, color: me.color });
+    if (this.peerId) afterRegisteredOpen(this);
+  }
+  onData(d) {
+    this.lastRx = now();
+    if (typeof d !== 'string') { onBinary(this, d); return; }
+    let m; try { m = JSON.parse(d); } catch { return; }
+    handleMessage(this, m);
+  }
+  onClose(reason) {
+    if (this.closed) return;
+    this.closed = true; this.state = 'closed';
+    if (this.tp) { this.tp.reject && this.tp.reject(new Error('closed')); this.tp = null; }
+    pendingManual.delete(this);
+    if (this.peerId && links.get(this.peerId) === this) {
+      links.delete(this.peerId);
+      onLinkLost(this, reason);
+    }
+    try { this.kind === 'peerjs' ? this.conn.close() : (this._dc && this._dc.close(), this._pc && this._pc.close()); } catch {}
+    scheduleRender();
+  }
+  close(reason) { this.onClose(reason || 'local'); }
+}
+
+// Register a link for a peer, resolving duplicates deterministically on both sides.
+function registerLink(L) {
+  const ex = links.get(L.peerId);
+  if (ex && ex !== L && !ex.closed) {
+    let keepNew;
+    if (ex.isOpen && ex.kind !== L.kind) keepNew = false;
+    else {
+      const pref = me.id < L.peerId ? me.id : L.peerId;
+      if (L.initiator === pref && ex.initiator !== pref) keepNew = true;
+      else if (ex.initiator === pref && L.initiator !== pref) keepNew = false;
+      else keepNew = true; // same initiator: newer attempt replaces older
+    }
+    if (!keepNew) { L.closed = true; try { L.kind === 'peerjs' ? L.conn.close() : L._pc.close(); } catch {} return false; }
+    ex.closed = true; ex.state = 'closed';
+    try { ex.kind === 'peerjs' ? ex.conn.close() : ex._pc.close(); } catch {}
+  }
+  links.set(L.peerId, L);
+  scheduleRender();
+  return true;
+}
+
+function afterRegisteredOpen(L) {
+  const a = attempts.get(L.peerId);
+  const lostAt = lostTimes.get(L.peerId);
+  const took = ((now() - L.createdAt) / 1000).toFixed(1);
+  if (lostAt) {
+    const sec = ((now() - lostAt) / 1000).toFixed(1);
+    reconnectCount.set(L.peerId, (reconnectCount.get(L.peerId) || 0) + 1);
+    L.recovery = sec + 's';
+    lostTimes.delete(L.peerId);
+    L.openLog = () => log(`再接続成功: ${L.name}（切断から ${sec} 秒）`, 'ok');
+  } else {
+    L.openLog = () => log(`接続成功: ${L.name} [${L.kind === 'manual' ? '手動' : 'PeerJS'}]（${took} 秒）`, 'ok');
+  }
+  if (L.helloed) { L.openLog(); L.openLog = null; }
+  if (a) attempts.delete(L.peerId);
+  L.send({ t: 'sv', sv: stateVector() });
+  sendStatus();
+  watchPc(L);
+  setTimeout(() => updateLinkStats(L), 500);
+  enableShared(true);
+}
+
+function onLinkLost(L, reason) {
+  if (L.openedAt) {
+    log(`切断: ${L.name} (${reason || '不明'})`, reason === 'bye' ? '' : 'warn');
+    if (reason !== 'bye') lostTimes.set(L.peerId, now());
+  }
+  if (reason === 'bye') { members.delete(L.peerId); lostTimes.delete(L.peerId); }
+}
+
+// =====================================================================
+// Message handling
+// =====================================================================
+const seenStatus = new Map(); // id -> last seq
+const seenBurst = new Set();
+
+function handleMessage(L, m) {
+  switch (m.t) {
+    case 'hello': {
+      touchMember(m.id, { name: m.name, color: m.color });
+      L.helloed = true;
+      if (!L.peerId) { // manual link learns peer id here
+        L.peerId = m.id;
+        pendingManual.delete(L);
+        if (!registerLink(L)) return;
+        afterRegisteredOpen(L);
+      } else if (L.openLog) { L.openLog(); L.openLog = null; }
+      break;
+    }
+    case 'op': {
+      if (!Array.isArray(m.ops)) return;
+      const fresh = m.ops.filter(applyOp);
+      floodOps(fresh, L);
+      break;
+    }
+    case 'sv': { // anti-entropy: send the ops the other side is missing
+      const theirs = m.sv || {};
+      const out = [];
+      for (const [o, arr] of originOps) {
+        const [cnt, max] = theirs[o] || [0, 0];
+        if (cnt >= arr.length) continue;
+        // no gaps on their side -> only send newer ops; otherwise resend this origin's ops
+        for (const op of arr) if (cnt !== max || op.s > max) out.push(op);
+      }
+      if (out.length) L.sendOps(out);
+      break;
+    }
+    case 'st': {
+      if (!m.id || m.id === me.id) return;
+      if ((seenStatus.get(m.id) || 0) >= m.sq) return;
+      seenStatus.set(m.id, m.sq);
+      touchMember(m.id, { name: m.name, color: m.color, status: m });
+      if (m.ttl > 0) { const fw = JSON.stringify(Object.assign({}, m, { ttl: m.ttl - 1 })); for (const o of links.values()) if (o !== L && o.isOpen) o.sendRaw(fw); }
+      break;
+    }
+    case 'burst': {
+      if (seenBurst.has(m.bid)) return;
+      seenBurst.add(m.bid);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      runBurst(m);
+      break;
+    }
+    case 'bye': L.close('bye'); break;
+    case 'tp-start': L.rx = { id: m.id, bytes: m.bytes, got: 0, t0: 0 }; break;
+    case 'tp-done': if (L.tp && L.tp.id === m.id) L.tp.resolve(m); break;
+  }
+}
+function onBinary(L, buf) {
+  const r = L.rx;
+  if (!r) return;
+  if (!r.t0) r.t0 = now();
+  r.got += buf.byteLength;
+  if (r.got >= r.bytes) { L.send({ t: 'tp-done', id: r.id, ms: now() - r.t0, bytes: r.got }); L.rx = null; }
+}
+
+// =====================================================================
+// Members (everyone in the room, learned directly or via flooded status)
+// =====================================================================
+const members = new Map(); // id -> {name, color, status, rx}
+const attempts = new Map(); // id -> {n, next}
+const lostTimes = new Map();
+const reconnectCount = new Map();
+const joinTargets = new Set();
+let statusSeq = 0;
+const ONLINE_MS = 9000;
+
+function touchMember(id, info) {
+  const m = members.get(id) || { name: id, color: colorOf(id) };
+  const isNew = !members.has(id) || now() - m.rx > ONLINE_MS;
+  Object.assign(m, info, { rx: now() });
+  members.set(id, m);
+  if (isNew) log(`メンバー: ${m.name} を認識`);
+  scheduleRender();
+}
+const isOnline = m => now() - m.rx < ONLINE_MS;
+
+function myStatus() {
+  const ls = {};
+  for (const [id, L] of links) ls[id] = { r: L.isOpen ? L.route : 'c', rtt: L.rtt };
+  for (const [id, a] of attempts) if (!ls[id]) ls[id] = { r: 'x', n: a.n };
+  return { t: 'st', id: me.id, sq: ++statusSeq, name: me.name, color: me.color, beacon: !!beaconPeer && beaconOpen,
+    links: ls, h: stateHash(), n: ops.size, ttl: 6 };
+}
+function sendStatus() {
+  const s = JSON.stringify(myStatus());
+  for (const L of links.values()) if (L.isOpen) L.sendRaw(s);
+}
+let statusTimer = null;
+function scheduleStatus() {
+  if (statusTimer) return;
+  statusTimer = setTimeout(() => { statusTimer = null; sendStatus(); }, 400);
+}
+
+// =====================================================================
+// PeerJS signaling, room bootstrap (beacon), mesh maintenance
+// =====================================================================
+let peer = null, beaconPeer = null, beaconOpen = false, room = null, lastBeaconSeen = 0, lastBeaconQuery = 0;
+const peerOpts = () => Object.assign({ config: rtcConfig(), debug: 1 }, CFG.server || {});
+const beaconIdOf = r => 'p2pt-room-' + r.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+
+function setSig(text, cls) { $('sigState').textContent = text; $('sigState').className = cls || ''; }
+function setRole() {
+  $('roleState').textContent = !room ? '-' : beaconOpen ? `ルーム窓口（新規参加者の受付役） / ${room}` : `メンバー / ${room}`;
+}
+
+function joinRoom(r) {
+  if (typeof Peer === 'undefined') { log('PeerJS を読み込めませんでした。手動モードを使ってください', 'ng'); setSig('PeerJS 読み込み失敗', 'ng'); return; }
+  room = r;
+  history.replaceState(null, '', location.pathname + '?room=' + encodeURIComponent(r));
+  $('joinBtn').disabled = true; $('leaveBtn').disabled = false; $('room').disabled = true;
+  setSig('接続中…'); setRole();
+  peer = new Peer(me.id, peerOpts());
+  peer.on('open', () => {
+    setSig('接続済み', 'ok');
+    log('シグナリングサーバーに接続しました', 'ok');
+    lastBeaconSeen = now();
+    tryClaimBeacon(true);
+  });
+  peer.on('connection', c => {
+    const L = new Link({ peerId: c.peer, kind: 'peerjs', initiator: (c.metadata && c.metadata.from) || c.peer, conn: c });
+    bindConn(L);
+  });
+  peer.on('disconnected', () => {
+    setSig('切断（再接続します）', 'warn');
+    log('シグナリングサーバーから切断。既存の P2P 接続は維持されます', 'warn');
+    setTimeout(() => { if (peer && !peer.destroyed && peer.disconnected) try { peer.reconnect(); } catch {} }, 2000);
+  });
+  peer.on('error', e => {
+    if (e.type === 'peer-unavailable') {
+      const id = (e.message.match(/peer (\S+)/) || [])[1];
+      const L = id && links.get(id);
+      if (L && !L.isOpen) L.close('相手が見つからない');
+      if (id === beaconIdOf(room)) log('ルーム窓口が見つかりません（しばらくすると誰かが引き継ぎます）', 'warn');
+      return;
+    }
+    if (e.type === 'unavailable-id') { log('ID が重複しました。再読み込みしてください', 'ng'); return; }
+    log(`シグナリングエラー: ${e.type} ${e.message}`, 'warn');
+    if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(e.type)) setSig('エラー: ' + e.type, 'ng');
+  });
+}
+
+function tryClaimBeacon(queryIfTaken) {
+  if (!room || beaconPeer || !peer || peer.destroyed) return;
+  const bid = beaconIdOf(room);
+  const bp = beaconPeer = new Peer(bid, peerOpts());
+  bp.on('open', () => {
+    beaconOpen = true; lastBeaconSeen = now(); setRole();
+    log('ルーム窓口を引き受けました（新しく来た人に参加者一覧を渡す役）');
+    sendStatus();
+  });
+  bp.on('connection', c => {
+    c.on('open', () => {
+      const list = [me.id, ...[...members].filter(([, m]) => isOnline(m)).map(([id]) => id)];
+      c.send(JSON.stringify({ t: 'members', list }));
+      setTimeout(() => c.close(), 3000);
+    });
+  });
+  bp.on('disconnected', () => setTimeout(() => { if (beaconPeer === bp && !bp.destroyed) try { bp.reconnect(); } catch {} }, 2000));
+  bp.on('error', e => {
+    if (beaconPeer !== bp) return;
+    if (e.type === 'unavailable-id') {
+      beaconPeer = null; beaconOpen = false; setRole();
+      try { bp.destroy(); } catch {}
+      if (queryIfTaken) queryBeacon();
     }
   });
-  pc.addEventListener('connectionstatechange', () => {
-    upd();
-    if (pc.connectionState === 'connected') setTimeout(() => reportRoute(pc), 300);
+}
+function releaseBeacon() {
+  if (!beaconPeer) return;
+  try { beaconPeer.destroy(); } catch {}
+  beaconPeer = null; beaconOpen = false; setRole();
+}
+function queryBeacon() {
+  if (!peer || !peer.open) return;
+  lastBeaconQuery = now();
+  const c = peer.connect(beaconIdOf(room), { serialization: 'raw', metadata: { from: me.id, q: 1 } });
+  if (!c) return;
+  const timer = setTimeout(() => c.close(), 15000);
+  c.on('data', d => {
+    let m; try { m = JSON.parse(d); } catch { return; }
+    if (m.t !== 'members') return;
+    lastBeaconSeen = now();
+    const others = m.list.filter(id => id !== me.id);
+    log(`参加者一覧を取得: ${others.length} 人`);
+    for (const id of others) { joinTargets.add(id); if (!members.has(id)) members.set(id, { name: id, color: colorOf(id), rx: now() }); }
+    clearTimeout(timer); c.close();
+    meshTick();
   });
-  pc.addEventListener('icegatheringstatechange', () => log('ICE gathering: ' + pc.iceGatheringState));
-  pc.addEventListener('icecandidate', e => {
-    if (!e.candidate || !e.candidate.candidate) return;
-    const type = (e.candidate.candidate.match(/ typ (\w+)/) || [])[1] || '?';
-    candTypes[type] = (candTypes[type] || 0) + 1;
-    renderCands();
-    log(`候補: ${type} ${e.candidate.protocol || ''} ${e.candidate.address || '(mDNS/秘匿)'}:${e.candidate.port || ''}`);
-  });
-  pc.addEventListener('icecandidateerror', e => log(`候補エラー: ${e.url || ''} ${e.errorCode} ${e.errorText}`, 'warn'));
 }
 
-async function reportRoute(pc) {
+function connectTo(id) {
+  const c = peer.connect(id, { serialization: 'raw', reliable: true, metadata: { from: me.id } });
+  if (!c) return;
+  const L = new Link({ peerId: id, kind: 'peerjs', initiator: me.id, conn: c });
+  bindConn(L);
+}
+function bindConn(L) {
+  if (!registerLink(L)) return;
+  const c = L.conn;
+  c.on('open', () => L.onOpen());
+  c.on('data', d => L.onData(d));
+  c.on('close', () => L.onClose('close'));
+  c.on('error', e => log(`接続エラー (${L.name}): ${e.type || ''} ${e.message || e}`, 'warn'));
+  const iv = setInterval(() => { if (L.pc) { clearInterval(iv); watchPc(L); } if (L.closed) clearInterval(iv); }, 50);
+}
+
+function meshTick() {
+  const t = now();
+  // stale members
+  for (const [id, m] of members) if (t - m.rx > 60000 && !links.has(id)) members.delete(id);
+  // connection timeouts and ICE watchdog
+  for (const L of [...links.values(), ...pendingManual]) {
+    if (!L.isOpen && t - L.createdAt > 20000 && L.kind === 'peerjs') L.close('タイムアウト');
+    const pc = L.pc;
+    if (L.isOpen && pc) {
+      if (pc.iceConnectionState === 'disconnected') {
+        if (!L.iceDiscSince) L.iceDiscSince = t;
+        else if (t - L.iceDiscSince > 6000) L.close('ICE disconnected が継続');
+      } else L.iceDiscSince = 0;
+    }
+  }
+  if (!peer || !peer.open || !room) return;
+  // connect to everyone we know about (smaller id initiates; new joiners initiate to everyone once)
+  for (const [id, m] of members) {
+    if (id === me.id || !isOnline(m)) continue;
+    const L = links.get(id);
+    if (L && !L.closed) continue;
+    if (!(me.id < id) && !joinTargets.has(id)) continue;
+    const a = attempts.get(id) || { n: 0, next: 0 };
+    if (t < a.next) continue;
+    a.n++; a.next = t + Math.min(15000, 1000 * 2 ** Math.min(a.n - 1, 4));
+    attempts.set(id, a);
+    joinTargets.delete(id);
+    if (a.n > 1) log(`再試行 ${a.n - 1} 回目: ${m.name}`);
+    connectTo(id);
+  }
+  // beacon takeover: if nobody holds it, the smallest online id claims it
+  const online = [me.id, ...[...members].filter(([, m]) => isOnline(m)).map(([id]) => id)];
+  if ([...members.values()].some(m => isOnline(m) && m.status && m.status.beacon)) lastBeaconSeen = t;
+  if (beaconOpen) lastBeaconSeen = t;
+  if (!beaconPeer && t - lastBeaconSeen > 8000 && online.sort()[0] === me.id) tryClaimBeacon(false);
+  // isolated? ask the room again
+  if (!beaconOpen && ![...links.values()].some(L => L.isOpen) && t - lastBeaconQuery > 10000) queryBeacon();
+}
+setInterval(meshTick, 1000);
+setInterval(() => { if ([...links.values()].some(L => L.isOpen)) sendStatus(); }, 2000);
+setInterval(() => { for (const L of links.values()) if (L.isOpen) { L.send({ t: 'sv', sv: stateVector() }); updateLinkStats(L); } }, 4000);
+
+function leaveRoom() {
+  for (const L of links.values()) { L.send({ t: 'bye' }); }
+  setTimeout(() => {
+    for (const L of [...links.values()]) L.close('bye');
+    releaseBeacon();
+    if (peer) { try { peer.destroy(); } catch {} peer = null; }
+    room = null; members.clear(); attempts.clear(); lostTimes.clear(); joinTargets.clear();
+    setSig('未接続'); setRole();
+    $('joinBtn').disabled = false; $('leaveBtn').disabled = true; $('room').disabled = false;
+    enableShared(false); scheduleRender();
+  }, 100);
+}
+window.addEventListener('pagehide', () => {
+  for (const L of links.values()) L.send({ t: 'bye' });
+  try { beaconPeer && beaconPeer.destroy(); peer && peer.destroy(); } catch {}
+});
+window.addEventListener('online', () => { log('ネットワーク復帰を検知'); if (peer && peer.disconnected && !peer.destroyed) try { peer.reconnect(); } catch {} });
+window.addEventListener('offline', () => log('ネットワーク切断を検知', 'warn'));
+
+// =====================================================================
+// RTCPeerConnection inspection
+// =====================================================================
+function watchPc(L) {
+  const pc = L.pc;
+  if (!pc || pc.__watched) return;
+  pc.__watched = true;
+  pc.addEventListener('iceconnectionstatechange', () => {
+    const s = pc.iceConnectionState;
+    if (s === 'failed') log(`ICE 失敗 (${L.name}): 直接接続できません。TURN が必要な可能性があります`, 'ng');
+    else if (s === 'disconnected') log(`ICE 一時切断 (${L.name})`, 'warn');
+    if (s === 'connected' || s === 'completed') setTimeout(() => updateLinkStats(L), 300);
+    scheduleRender();
+  });
+}
+const routeLetter = (a, b) => (a === 'relay' || b === 'relay') ? 'R' : (a === 'host' && b === 'host') ? 'H' : 'S';
+async function updateLinkStats(L) {
+  const pc = L.pc;
+  if (!pc || !L.isOpen) return;
   try {
     const stats = await pc.getStats();
     let pair = null;
-    stats.forEach(r => {
-      if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId);
-    });
-    if (!pair) stats.forEach(r => { if (r.type === 'candidate-pair' && (r.selected || r.nominated) && r.state === 'succeeded') pair = r; });
+    stats.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId); });
+    if (!pair) stats.forEach(r => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
     if (!pair) return;
-    const l = stats.get(pair.localCandidateId), r = stats.get(pair.remoteCandidateId);
-    const desc = `${l?.candidateType} ⇄ ${r?.candidateType} (${l?.protocol || ''})`;
-    const relayed = l?.candidateType === 'relay' || r?.candidateType === 'relay';
-    setStat('sRoute', desc + (relayed ? ' [TURN中継]' : ' [直接P2P]'), relayed ? 'warn' : 'ok');
-    if (pair.currentRoundTripTime != null) setStat('sRtt', (pair.currentRoundTripTime * 1000).toFixed(0) + ' ms');
-    log('選択された経路: ' + desc, 'ok');
-  } catch (e) { log('getStats 失敗: ' + e, 'warn'); }
+    const lc = stats.get(pair.localCandidateId), rc = stats.get(pair.remoteCandidateId);
+    const r = routeLetter(lc && lc.candidateType, rc && rc.candidateType);
+    if (r !== L.route) log(`経路 (${L.name}): ${lc && lc.candidateType} ⇄ ${rc && rc.candidateType} / ${lc && lc.protocol}`);
+    L.route = r;
+    L.routeDetail = `${lc && lc.candidateType}⇄${rc && rc.candidateType} ${lc && lc.protocol || ''}`;
+    if (pair.currentRoundTripTime != null) L.rtt = Math.round(pair.currentRoundTripTime * 1000);
+    scheduleRender();
+  } catch {}
 }
 
-// ---------- Shared: message channel abstraction ----------
-let sendFn = null;
-const pingSent = new Map();
-const rtts = [];
-let pingTotal = 0;
-function onChannelOpen(send, label) {
-  sendFn = send;
-  setStat('sDc', 'open', 'ok');
-  $('msg').disabled = $('send').disabled = $('ping').disabled = false;
-  chat(`✅ ${label} で接続しました`, 'sys');
-  log('DataChannel open — P2P 接続成功', 'ok');
-}
-function onChannelClose() {
-  sendFn = null;
-  setStat('sDc', 'closed', 'ng');
-  $('msg').disabled = $('send').disabled = $('ping').disabled = true;
-  chat('接続が閉じられました', 'sys');
-}
-function onChannelData(raw) {
-  let m; try { m = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { m = { t: 'msg', v: String(raw) }; }
-  if (m.t === 'ping') sendFn && sendFn(JSON.stringify({ t: 'pong', id: m.id }));
-  else if (m.t === 'pong') {
-    const s = pingSent.get(m.id);
-    if (s != null) {
-      pingSent.delete(m.id);
-      rtts.push(performance.now() - s);
-      if (rtts.length === pingTotal) {
-        const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
-        chat(`Ping: ${rtts.length}回 平均 ${avg.toFixed(1)} ms / 最小 ${Math.min(...rtts).toFixed(1)} / 最大 ${Math.max(...rtts).toFixed(1)}`, 'sys');
-        setStat('sRtt', avg.toFixed(1) + ' ms (アプリ層)');
-      }
+// =====================================================================
+// Tests: burst write / throughput / disconnect
+// =====================================================================
+let burst = null;
+function runBurst(m) {
+  const t = now();
+  burst = { bid: m.bid, n: m.n, start: t, endLocal: t + m.n * 5 + 200, startOps: ops.size, done: false, from: m.from };
+  $('burstResult').textContent = `一斉書き込み中…（${m.fromName} が開始 / 各端末 ${m.n} 回）`;
+  log(`一斉書き込みテスト開始（各端末 ${m.n} 回）`);
+  let i = 0;
+  const iv = setInterval(() => {
+    for (let k = 0; k < 4 && i < m.n; k++, i++) {
+      const c = (cyrb53(me.id + m.bid + i)[0]) % GRID;
+      localOp({ k: 'c', c, v: me.color });
     }
-  } else chat('相手: ' + m.v);
+    if (i >= m.n) clearInterval(iv);
+  }, 20);
 }
-function sendMsg() {
-  const v = $('msg').value.trim();
-  if (!v || !sendFn) return;
-  sendFn(JSON.stringify({ t: 'msg', v }));
-  chat('自分: ' + v, 'me');
-  $('msg').value = '';
-}
-$('send').onclick = sendMsg;
-$('msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) sendMsg(); });
-$('ping').onclick = () => {
-  if (!sendFn) return;
-  rtts.length = 0; pingSent.clear(); pingTotal = 10;
-  for (let i = 0; i < 10; i++) setTimeout(() => {
-    const id = Math.random().toString(36).slice(2);
-    pingSent.set(id, performance.now());
-    sendFn(JSON.stringify({ t: 'ping', id }));
-  }, i * 100);
-};
-
-// ---------- PeerJS mode ----------
-let peer = null, conn = null;
-function bindConn(c) {
-  if (conn && conn !== c) { log('既存の接続を置き換えます', 'warn'); conn.close(); }
-  conn = c;
-  log('PeerJS 接続: ' + c.peer);
-  const tryWatch = () => watchPc(c.peerConnection);
-  tryWatch();
-  const iv = setInterval(() => { tryWatch(); if (c.peerConnection) clearInterval(iv); }, 50);
-  c.on('open', () => { tryWatch(); onChannelOpen(d => c.send(d), 'PeerJS'); });
-  c.on('data', onChannelData);
-  c.on('close', onChannelClose);
-  c.on('error', e => log('接続エラー: ' + e, 'ng'));
-}
-function initPeer() {
-  if (typeof Peer === 'undefined') {
-    $('myId').textContent = 'PeerJS の読み込みに失敗（手動モードを使ってください）';
-    $('myId').className = 'id ng';
-    return;
+function checkBurst() {
+  if (!burst || burst.done) return;
+  const t = now();
+  if (t < burst.endLocal) return;
+  const h = stateHash();
+  const online = [...members.entries()].filter(([, m]) => isOnline(m));
+  const fresh = online.every(([, m]) => m.status && m.rx > burst.endLocal);
+  const same = online.every(([, m]) => m.status && m.status.h === h);
+  const el = $('burstResult');
+  const enough = ops.size >= burst.startOps + burst.n * (online.length + 1);
+  if (fresh && same && enough) {
+    burst.done = true;
+    const sec = ((t - burst.start) / 1000).toFixed(1);
+    el.innerHTML = `<b class="ok">✅ ${online.length + 1} 台すべて一致</b> — 開始から ${sec} 秒で収束（操作 ${ops.size} 件, ハッシュ ${h}）`;
+    log(`一斉書き込みテスト: ${online.length + 1} 台で一致（${sec} 秒）`, 'ok');
+  } else if (t - burst.start > 60000) {
+    burst.done = true;
+    const bad = online.filter(([, m]) => !m.status || m.status.h !== h).map(([, m]) => m.name);
+    el.innerHTML = `<b class="ng">⚠ 60 秒経っても不一致</b>: ${esc(bad.join(', '))}`;
+    log('一斉書き込みテスト: 60 秒以内に収束せず', 'ng');
   }
-  peer = new Peer({ config: { iceServers: ICE_SERVERS }, debug: 1 });
-  peer.on('open', id => {
-    $('myId').textContent = id;
-    $('copyId').disabled = $('connectBtn').disabled = false;
-    log('PeerJS シグナリングサーバーに接続 ID=' + id, 'ok');
-    const want = new URLSearchParams(location.search).get('peer');
-    if (want) { $('remoteId').value = want; $('connectBtn').click(); }
-  });
-  peer.on('connection', c => { log('相手から接続要求を受信'); bindConn(c); });
-  peer.on('disconnected', () => log('シグナリングサーバーから切断（P2P接続自体は維持されます）', 'warn'));
-  peer.on('error', e => log('PeerJS エラー: ' + e.type + ' ' + e.message, 'ng'));
 }
-$('connectBtn').onclick = () => {
-  const id = $('remoteId').value.trim();
-  if (!id || !peer) return;
-  log('接続中 → ' + id);
-  bindConn(peer.connect(id, { reliable: true }));
+setInterval(checkBurst, 250);
+$('burstBtn').onclick = () => {
+  const m = { t: 'burst', bid: rand(8), n: Number($('burstN').value), from: me.id, fromName: me.name };
+  seenBurst.add(m.bid);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+  runBurst(m);
 };
-$('copyId').onclick = async () => {
-  const id = $('myId').textContent;
-  const url = location.origin + location.pathname + '?peer=' + encodeURIComponent(id);
-  try { await navigator.clipboard.writeText(id); log('ID をコピーしました。URL で渡す場合: ' + url); }
-  catch { log('コピー失敗。手動でコピーしてください: ' + id, 'warn'); }
-};
-initPeer();
+$('clearBtn').onclick = () => localOp({ k: 'x' });
 
-// ---------- Manual mode ----------
-let mpc = null;
-function newManualPc() {
-  if (mpc) mpc.close();
-  mpc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  watchPc(mpc);
-  return mpc;
+async function speedTest(L) {
+  if (!L.isOpen || L.tp) return;
+  const mb = Number($('tpSize').value), bytes = mb << 20, CH = 16384;
+  const id = rand(6);
+  const dc = L.dc;
+  L.tpResult = '計測中…'; scheduleRender();
+  const done = new Promise((resolve, reject) => { L.tp = { id, resolve, reject }; });
+  const t0 = now();
+  L.send({ t: 'tp-start', id, bytes });
+  const chunk = new Uint8Array(CH);
+  let sent = 0;
+  try {
+    while (sent < bytes) {
+      if (dc.bufferedAmount > (4 << 20)) {
+        await new Promise(r => { const f = () => { dc.removeEventListener('bufferedamountlow', f); r(); }; dc.addEventListener('bufferedamountlow', f); setTimeout(f, 1000); });
+        if (!L.isOpen) throw new Error('closed');
+        continue;
+      }
+      const n = Math.min(CH, bytes - sent);
+      if (!L.sendRaw(n === CH ? chunk : chunk.slice(0, n))) throw new Error('send failed');
+      sent += n;
+    }
+    const res = await Promise.race([done, new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 120000))]);
+    const ms = now() - t0;
+    const mbps = (bytes * 8 / (ms / 1000) / 1e6);
+    L.tpResult = `${mbps.toFixed(1)} Mbps`;
+    log(`速度テスト (${L.name}): ${mb} MB を ${(ms / 1000).toFixed(2)} 秒 → ${mbps.toFixed(1)} Mbps（受信側計測 ${(res.bytes * 8 / (res.ms / 1000) / 1e6).toFixed(1)} Mbps）`, 'ok');
+  } catch (e) {
+    L.tpResult = '失敗';
+    log(`速度テスト失敗 (${L.name}): ${e.message}`, 'ng');
+  } finally { L.tp = null; scheduleRender(); }
 }
-function bindDc(dc) {
-  dc.onopen = () => onChannelOpen(d => dc.send(d), '手動モード');
-  dc.onclose = onChannelClose;
-  dc.onmessage = e => onChannelData(e.data);
+
+// =====================================================================
+// Diagnostics
+// =====================================================================
+$('diagBtn').onclick = async () => {
+  const out = $('diagOut');
+  out.innerHTML = '<dt>状態</dt><dd>候補を収集中…（最大 8 秒）</dd>';
+  const servers = [...DEFAULT_ICE, ...CFG.ice.filter(s => !JSON.stringify(s).includes('stun.l.google') && !JSON.stringify(s).includes('stun1.l.google'))];
+  const pc = new RTCPeerConnection({ iceServers: servers });
+  const cands = [];
+  pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate); };
+  const errors = [];
+  pc.onicecandidateerror = e => errors.push(`${e.url || ''} ${e.errorCode} ${e.errorText || ''}`);
+  pc.createDataChannel('diag');
+  const t0 = now();
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise(r => { const f = () => pc.iceGatheringState === 'complete' && r(); pc.onicegatheringstatechange = f; setTimeout(r, 8000); });
+  const ms = now() - t0;
+  pc.close();
+  const typ = c => (c.candidate.match(/ typ (\w+)/) || [])[1];
+  const portOf = c => c.port || Number(c.candidate.split(' ')[5]);
+  const addrOf = c => c.address || c.candidate.split(' ')[4];
+  const relPort = c => c.relatedPort || Number((c.candidate.match(/rport (\d+)/) || [])[1]);
+  const srflx = cands.filter(c => typ(c) === 'srflx' && (c.protocol || '').toLowerCase() !== 'tcp');
+  const relay = cands.filter(c => typ(c) === 'relay');
+  const host = cands.filter(c => typ(c) === 'host');
+  // NAT type hint: same local socket mapped to different public ports by different STUN servers => symmetric
+  const byBase = new Map();
+  for (const c of srflx) { const k = relPort(c); if (!byBase.has(k)) byBase.set(k, new Set()); byBase.get(k).add(addrOf(c) + ':' + portOf(c)); }
+  const symmetric = [...byBase.values()].some(s => s.size > 1);
+  let nat;
+  if (!srflx.length) nat = '<span class="ng">STUN 応答なし（UDP がブロックされている可能性。TURN 必須）</span>';
+  else if (symmetric) nat = '<span class="warn">対称型 NAT の可能性が高い（相手も同様なら直接接続は困難 → TURN 推奨）</span>';
+  else nat = '<span class="ok">Cone 型 NAT（直接接続できる可能性が高い）</span>';
+  const v6 = srflx.some(c => addrOf(c).includes(':'));
+  const hasTurn = CFG.ice.some(s => [].concat(s.urls).some(u => /^turns?:/.test(u)));
+  out.innerHTML = `
+    <dt>収集時間</dt><dd>${(ms / 1000).toFixed(1)} 秒</dd>
+    <dt>host 候補</dt><dd>${host.length} 件</dd>
+    <dt>srflx 候補</dt><dd>${srflx.length} 件 ${esc([...new Set(srflx.map(c => addrOf(c) + ':' + portOf(c)))].join(', '))}</dd>
+    <dt>NAT 判定</dt><dd>${nat}</dd>
+    <dt>IPv6 グローバル</dt><dd>${v6 ? 'あり' : 'なし'}</dd>
+    <dt>TURN</dt><dd>${!hasTurn ? '未設定' : relay.length ? `<span class="ok">OK（relay 候補 ${relay.length} 件）</span>` : '<span class="ng">relay 候補なし（URL・認証情報を確認）</span>'}</dd>
+    ${errors.length ? `<dt>エラー</dt><dd class="warn">${esc(errors.slice(0, 5).join(' / '))}</dd>` : ''}`;
+  log('ネットワーク診断を実行しました');
+};
+
+// =====================================================================
+// Manual (serverless) link
+// =====================================================================
+let manualLink = null;
+function newManualLink(initiator) {
+  if (manualLink && !manualLink.isOpen) manualLink.close('replaced');
+  const pc = new RTCPeerConnection(rtcConfig());
+  const L = manualLink = new Link({ peerId: null, kind: 'manual', initiator: initiator ? me.id : null, pc });
+  pendingManual.add(L);
+  watchPc(L);
+  pc.addEventListener('connectionstatechange', () => { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') L.onClose(pc.connectionState); });
+  return L;
+}
+function bindManualDc(L, dc) {
+  L._dc = dc;
+  dc.onopen = () => L.onOpen();
+  dc.onmessage = e => L.onData(e.data);
+  dc.onclose = () => L.onClose('close');
 }
 function waitGathering(pc, ms = 5000) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise(res => {
-    const done = () => { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', done); res(); } };
-    pc.addEventListener('icegatheringstatechange', done);
+    const f = () => { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', f); res(); } };
+    pc.addEventListener('icegatheringstatechange', f);
     setTimeout(res, ms);
   });
 }
-const encode = desc => btoa(unescape(encodeURIComponent(JSON.stringify({ type: desc.type, sdp: desc.sdp }))));
+const encode = d => btoa(unescape(encodeURIComponent(JSON.stringify({ type: d.type, sdp: d.sdp, from: me.id }))));
 const decode = s => JSON.parse(decodeURIComponent(escape(atob(s.trim()))));
-
 $('mkOffer').onclick = async () => {
-  const pc = newManualPc();
-  bindDc(pc.createDataChannel('test'));
-  await pc.setLocalDescription(await pc.createOffer());
+  const L = newManualLink(true);
+  bindManualDc(L, L._pc.createDataChannel('p2pt'));
+  await L._pc.setLocalDescription(await L._pc.createOffer());
   $('localSdp').value = '候補を収集中…';
-  await waitGathering(pc);
-  $('localSdp').value = encode(pc.localDescription);
+  await waitGathering(L._pc);
+  $('localSdp').value = encode(L._pc.localDescription);
   log('オファー作成完了。相手に送ってください', 'ok');
 };
 $('applyRemote').onclick = async () => {
-  let desc;
-  try { desc = decode($('remoteSdp').value); } catch { log('SDP の形式が不正です', 'ng'); return; }
+  let d;
+  try { d = decode($('remoteSdp').value); } catch { log('SDP の形式が不正です', 'ng'); return; }
   try {
-    if (desc.type === 'offer') {
-      const pc = newManualPc();
-      pc.ondatachannel = e => bindDc(e.channel);
-      await pc.setRemoteDescription(desc);
-      await pc.setLocalDescription(await pc.createAnswer());
+    if (d.type === 'offer') {
+      const L = newManualLink(false);
+      L.initiator = d.from;
+      L._pc.ondatachannel = e => bindManualDc(L, e.channel);
+      await L._pc.setRemoteDescription(d);
+      await L._pc.setLocalDescription(await L._pc.createAnswer());
       $('localSdp').value = '候補を収集中…';
-      await waitGathering(pc);
-      $('localSdp').value = encode(pc.localDescription);
+      await waitGathering(L._pc);
+      $('localSdp').value = encode(L._pc.localDescription);
       log('アンサー作成完了。相手（A）に返してください', 'ok');
-    } else if (desc.type === 'answer') {
-      if (!mpc) { log('先にオファーを作成してください', 'ng'); return; }
-      await mpc.setRemoteDescription(desc);
+    } else if (d.type === 'answer') {
+      if (!manualLink || manualLink.closed) { log('先にオファーを作成してください', 'ng'); return; }
+      await manualLink._pc.setRemoteDescription(d);
       log('アンサーを適用しました。接続を待っています…');
     }
   } catch (e) { log('適用失敗: ' + e, 'ng'); }
 };
 $('copySdp').onclick = async () => {
   try { await navigator.clipboard.writeText($('localSdp').value); log('SDP をコピーしました'); }
-  catch { $('localSdp').select(); log('自動コピー失敗。選択状態にしたので手動でコピーしてください', 'warn'); }
+  catch { $('localSdp').select(); log('自動コピーに失敗。選択状態にしたので手動でコピーしてください', 'warn'); }
 };
+
+// =====================================================================
+// Rendering
+// =====================================================================
+let renderQueued = false, chatDirty = false;
+function scheduleRender() { if (!renderQueued) { renderQueued = true; requestAnimationFrame(render); } }
+const gridEl = $('grid');
+for (let i = 0; i < GRID; i++) {
+  const d = document.createElement('div');
+  d.onclick = () => {
+    if (!enabled) return;
+    const cur = grid[i];
+    localOp({ k: 'c', c: i, v: cur && cur.v === me.color ? '' : me.color });
+  };
+  gridEl.appendChild(d);
+}
+let enabled = false;
+function enableShared(on) {
+  enabled = on || enabled;
+  if (!on && ![...links.values()].some(L => L.isOpen)) enabled = false;
+  for (const id of ['burstBtn', 'clearBtn', 'msg', 'send']) $(id).disabled = !enabled;
+}
+// allow solo use too once in a room / linked
+function sendChat() {
+  const v = $('msg').value.trim();
+  if (!v) return;
+  localOp({ k: 'm', v, n: me.name, col: me.color });
+  $('msg').value = '';
+}
+$('send').onclick = sendChat;
+$('msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) sendChat(); });
+
+const routeCell = info => {
+  if (!info) return '<span class="hint">·</span>';
+  const r = info.r;
+  if (r === 'c' || r === '-') return '…';
+  if (r === 'x') return `<span class="ng">×</span><small>${info.n || ''}回</small>`;
+  const cls = r === 'R' ? 'warn' : 'ok';
+  return `<b class="${cls}">${r}</b><small>${info.rtt != null ? info.rtt + 'ms' : ''}</small>`;
+};
+function render() {
+  renderQueued = false;
+  // grid
+  const cells = gridEl.children;
+  for (let i = 0; i < GRID; i++) {
+    const v = grid[i] ? grid[i].v : '';
+    if (cells[i].__v !== v) { cells[i].style.background = v || ''; cells[i].__v = v; }
+  }
+  // chat
+  if (chatDirty) {
+    chatDirty = false;
+    chatOps.sort(stampCmp);
+    $('chat').innerHTML = chatOps.slice(-200).map(o => `<div><span class="dot" style="background:${esc(o.col || colorOf(o.o))}"></span><b>${esc(o.n)}</b>: ${esc(o.v)}</div>`).join('');
+    $('chat').scrollTop = 1e9;
+  }
+  // matrix
+  const myH = stateHash();
+  const st = myStatus(); statusSeq--; // preview only
+  const rows = [[me.id, { name: me.name + '（自分）', color: me.color, status: st, rx: now() }],
+    ...[...members.entries()].filter(([, m]) => now() - m.rx < 30000).sort((a, b) => a[1].name.localeCompare(b[1].name))];
+  const ids = rows.map(r => r[0]);
+  let html = '<tr><th>端末＼相手</th>' + rows.map(([id, m]) => `<th title="${esc(id)}"><span class="dot" style="background:${esc(m.color || colorOf(id))}"></span>${esc(m.name.replace('（自分）', ''))}</th>`).join('') + '<th>ハッシュ</th><th>操作数</th></tr>';
+  for (const [id, m] of rows) {
+    const online = id === me.id || isOnline(m);
+    const s = m.status;
+    html += `<tr${online ? '' : ' style="opacity:.45"'}><th><span class="dot" style="background:${esc(m.color || colorOf(id))}"></span>${esc(m.name)}${online ? '' : '（応答なし）'}</th>`;
+    for (const col of ids) html += col === id ? '<td class="c hint">—</td>' : `<td class="c">${s ? routeCell(s.links && s.links[col]) : '?'}</td>`;
+    const h = s ? s.h : '?';
+    html += `<td class="mono ${h === myH ? 'ok' : 'ng'}">${esc(h)}</td><td class="mono">${s ? s.n : '?'}</td></tr>`;
+  }
+  $('matrix').innerHTML = html;
+  // banner
+  const onlineOthers = rows.slice(1).filter(([, m]) => isOnline(m));
+  const banner = $('syncBanner');
+  if (!room && !links.size) { banner.className = 'banner'; banner.textContent = 'ルームに参加してください'; }
+  else if (!onlineOthers.length && room && !(peer && peer.open)) { banner.className = 'banner ng'; banner.textContent = 'シグナリングサーバーに接続できていません（ログを確認。手動モードなら接続可能）'; }
+  else if (!onlineOthers.length) { banner.className = 'banner warn'; banner.textContent = `自分だけです。他の端末で同じルーム「${room || ''}」に参加してください`; }
+  else {
+    const mismatch = onlineOthers.filter(([, m]) => !m.status || m.status.h !== myH);
+    const direct = onlineOthers.filter(([id]) => links.get(id) && links.get(id).isOpen).length;
+    if (mismatch.length) { banner.className = 'banner warn'; banner.textContent = `${onlineOthers.length + 1} 台中 ${mismatch.length} 台が同期中/不一致（${mismatch.map(([, m]) => m.name).join(', ')}）`; }
+    else { banner.className = 'banner ok'; banner.textContent = `✅ ${onlineOthers.length + 1} 台すべて同期済み（直接接続 ${direct}/${onlineOthers.length}）`; }
+  }
+  // links table
+  let lh = '<tr><th>相手</th><th>方式</th><th>状態</th><th>経路</th><th>RTT</th><th>再接続</th><th>速度</th><th></th></tr>';
+  const all = [...links.values()];
+  for (const [id, a] of attempts) if (!links.has(id)) all.push({ peerId: id, name: (members.get(id) || {}).name || id, kind: 'peerjs', state: `再試行待ち (${a.n}回失敗)`, attemptOnly: true });
+  if (!all.length) lh += '<tr><td colspan="8" class="hint">まだ接続はありません</td></tr>';
+  for (const L of all) {
+    const stCls = L.isOpen ? 'ok' : L.attemptOnly ? 'ng' : '';
+    const stText = L.isOpen ? 'open' : L.state;
+    lh += `<tr><td>${esc(L.name)}</td><td>${L.kind === 'manual' ? '手動' : 'PeerJS'}</td><td class="${stCls}">${esc(stText)}</td>
+      <td title="${esc(L.routeDetail || '')}">${L.isOpen ? esc(L.routeDetail || L.route) : '-'}</td><td>${L.rtt != null && L.isOpen ? L.rtt + ' ms' : '-'}</td>
+      <td>${reconnectCount.get(L.peerId) || 0}${L.recovery ? ` <span class="hint">(${L.recovery})</span>` : ''}</td><td>${esc(L.tpResult || '')}</td>
+      <td>${L.isOpen ? `<button class="small" data-tp="${esc(L.peerId)}" ${L.tp ? 'disabled' : ''}>速度</button> <button class="small" data-cut="${esc(L.peerId)}">切断</button>` : ''}</td></tr>`;
+  }
+  $('links').innerHTML = lh;
+}
+$('links').addEventListener('click', e => {
+  const tp = e.target.dataset.tp, cut = e.target.dataset.cut;
+  if (tp && links.get(tp)) speedTest(links.get(tp));
+  if (cut && links.get(cut)) { log(`切断テスト: ${links.get(cut).name} との接続を切ります（自動再接続を確認）`); links.get(cut).close('切断テスト'); }
+});
+setInterval(scheduleRender, 1000);
+
+// =====================================================================
+// Room UI
+// =====================================================================
+const params = new URLSearchParams(location.search);
+$('room').value = params.get('room') || 'room-' + rand(4);
+$('joinBtn').onclick = () => { const r = $('room').value.trim(); if (r) { joinRoom(r); enableShared(true); } };
+$('leaveBtn').onclick = leaveRoom;
+$('room').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) $('joinBtn').click(); });
+$('shareBtn').onclick = async () => {
+  const url = location.origin + location.pathname + '?room=' + encodeURIComponent($('room').value.trim());
+  try { await navigator.clipboard.writeText(url); log('招待 URL をコピーしました: ' + url, 'ok'); }
+  catch { log('コピーに失敗しました。この URL を共有してください: ' + url, 'warn'); }
+};
+if (typeof Peer === 'undefined') { setSig('PeerJS 読み込み失敗（手動モードのみ利用可）', 'ng'); $('joinBtn').disabled = true; $('manualBox').open = true; }
+else if (params.get('room')) $('joinBtn').click();
+render();
 </script>
 </body>
 </html>
