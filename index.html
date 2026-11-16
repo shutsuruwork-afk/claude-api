@@ -145,7 +145,7 @@
     <div class="banner" id="syncBanner">ルームに参加してください</div>
     <div class="scroll"><table class="matrix" id="matrix"></table></div>
     <p class="hint legend">
-      <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> NAT越え直接</span><span><b class="warn">R</b> TURN中継</span>
+      <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> 別ネットワークと直接（NAT越え・IPv6）</span><span><b class="warn">R</b> TURN中継</span>
       <span>… 接続中</span><span><b class="ng">×</b> 失敗/再試行中</span><span>· 直接接続なし（他端末経由で同期）</span>
     </p>
     <p class="hint">各行は「その端末から見た」接続状況です。ハッシュが全員一致していれば共有データは同期しています。直接つながらない組み合わせがあっても、他の端末を経由して同期します。</p>
@@ -159,7 +159,7 @@
     <div class="row">
       <button class="primary" id="burstBtn" disabled>一斉書き込みテスト</button>
       <select id="burstN"><option value="50">各50回</option><option value="200" selected>各200回</option><option value="1000">各1000回</option></select>
-      <button id="clearBtn" disabled>全消去</button>
+      <button id="clearBtn" disabled title="マス目・チャット・操作ログを全端末で消去">全消去</button>
     </div>
     <div id="burstResult" class="hint"></div>
     <h2 style="margin-top:16px">チャット（共有）</h2>
@@ -299,7 +299,8 @@ const $ = id => document.getElementById(id);
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
-const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const txt = v => typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : ''; // never throws (unlike String())
+const esc = s => txt(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function cyrb53(str, seed = 0) {
   let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
   for (let i = 0; i < str.length; i++) {
@@ -311,6 +312,11 @@ function cyrb53(str, seed = 0) {
   return [h1 >>> 0, h2 >>> 0];
 }
 const colorOf = id => `hsl(${cyrb53(id)[0] % 360} 70% 52%)`;
+// Everything received from other devices is untrusted: validate before it is stored or rendered.
+const safeColor = c => typeof c === 'string' && /^hsl\(\d{1,3} \d{1,3}% \d{1,3}%\)$/.test(c) ? c : '';
+const validId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id);
+const cleanName = v => txt(v).slice(0, 40) || '?';
+const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
 function log(msg, cls) {
   const el = $('log');
   const line = document.createElement('div');
@@ -381,16 +387,33 @@ const GRID = 144;
 const ops = new Map();          // opId -> op
 const originOps = new Map();    // origin -> [op]
 let mySeq = 0, lamport = 0;
+let epoch = 0;                  // bumped by「全消去」: ops of older epochs are dropped everywhere
 let hashA = 0, hashB = 0;       // XOR of per-op hashes: order independent
 const grid = new Array(GRID).fill(null); // {v, l, o, s}
 const chatOps = [];
 const stampCmp = (a, b) => (a.l - b.l) || (a.o < b.o ? -1 : a.o > b.o ? 1 : 0) || (a.s - b.s);
 
 function stateHash() {
+  if (epoch) { const [a, b] = cyrb53('epoch' + epoch); return ((hashA ^ a) >>> 0).toString(16).padStart(8, '0') + ((hashB ^ b) >>> 0).toString(16).padStart(8, '0').slice(0, 4); }
   return (hashA >>> 0).toString(16).padStart(8, '0') + (hashB >>> 0).toString(16).padStart(8, '0').slice(0, 4);
 }
-function applyOp(op) {
-  if (!op || typeof op.id !== 'string' || ops.has(op.id)) return false;
+function resetState(ep) {
+  epoch = ep; ops.clear(); originOps.clear(); mySeq = 0; hashA = 0; hashB = 0;
+  grid.fill(null); chatOps.length = 0; chatDirty = true;
+  scheduleRender(); scheduleStatus();
+}
+// A newer epoch seen from a peer: drop our old ops and tell our other links right away.
+function adoptEpoch(ep, fromLink) {
+  resetState(ep);
+  for (const L of links.values()) if (L !== fromLink && L.isOpen) L.send({ t: 'sv', ep: epoch, sv: {} });
+}
+const epochOf = v => Number.isSafeInteger(v) && v > 0 ? v : 0;
+function applyOp(op, fromLink) {
+  if (!op || typeof op.id !== 'string' || typeof op.o !== 'string' || !Number.isFinite(op.l) || !Number.isFinite(op.s)) return false;
+  const e = epochOf(op.e);
+  if (e < epoch) return false;
+  if (e > epoch) adoptEpoch(e, fromLink);
+  if (ops.has(op.id)) return false;
   ops.set(op.id, op);
   if (!originOps.has(op.o)) originOps.set(op.o, []);
   originOps.get(op.o).push(op);
@@ -399,7 +422,7 @@ function applyOp(op) {
   lamport = Math.max(lamport, op.l);
   if (op.k === 'c') {
     const cur = grid[op.c];
-    if (op.c >= 0 && op.c < GRID && (!cur || stampCmp(op, cur) > 0)) grid[op.c] = op;
+    if (Number.isInteger(op.c) && op.c >= 0 && op.c < GRID && (!cur || stampCmp(op, cur) > 0)) grid[op.c] = op;
   } else if (op.k === 'x') {
     for (let i = 0; i < GRID; i++) if (!grid[i] || stampCmp(op, grid[i]) > 0) grid[i] = op;
   } else if (op.k === 'm') {
@@ -410,7 +433,7 @@ function applyOp(op) {
   return true;
 }
 function localOp(fields) {
-  const op = Object.assign({ id: `${me.id}:${++mySeq}`, o: me.id, s: mySeq, l: ++lamport }, fields);
+  const op = Object.assign({ id: `${me.id}:${epoch}:${++mySeq}`, o: me.id, s: mySeq, l: ++lamport, e: epoch }, fields);
   applyOp(op);
   floodOps([op], null);
   return op;
@@ -521,7 +544,7 @@ function afterRegisteredOpen(L) {
   }
   if (L.helloed) { L.openLog(); L.openLog = null; }
   if (a) attempts.delete(L.peerId);
-  L.send({ t: 'sv', sv: stateVector() });
+  L.send({ t: 'sv', ep: epoch, sv: stateVector() });
   sendStatus();
   watchPc(L);
   setupRtChannel(L);
@@ -546,6 +569,7 @@ const seenBurst = new Set();
 function handleMessage(L, m) {
   switch (m.t) {
     case 'hello': {
+      if (!validId(m.id) || m.id === me.id || (L.peerId && m.id !== L.peerId)) return;
       touchMember(m.id, { name: m.name, color: m.color });
       L.helloed = true;
       if (!L.peerId) { // manual link learns peer id here
@@ -558,15 +582,18 @@ function handleMessage(L, m) {
     }
     case 'op': {
       if (!Array.isArray(m.ops)) return;
-      const fresh = m.ops.filter(applyOp);
+      const fresh = m.ops.filter(op => applyOp(op, L));
       floodOps(fresh, L);
       break;
     }
     case 'sv': { // anti-entropy: send the ops the other side is missing
-      const theirs = m.sv || {};
+      let theirs = m.sv && typeof m.sv === 'object' ? m.sv : {};
+      const tep = epochOf(m.ep);
+      if (tep > epoch) adoptEpoch(tep, L);
+      else if (tep < epoch) { L.send({ t: 'sv', ep: epoch, sv: {} }); theirs = {}; } // they reset, then get everything
       const out = [];
       for (const [o, arr] of originOps) {
-        const [cnt, max] = theirs[o] || [0, 0];
+        const [cnt, max] = Array.isArray(theirs[o]) ? theirs[o] : [0, 0];
         if (cnt >= arr.length) continue;
         // no gaps on their side -> only send newer ops; otherwise resend this origin's ops
         for (const op of arr) if (cnt !== max || op.s > max) out.push(op);
@@ -575,14 +602,16 @@ function handleMessage(L, m) {
       break;
     }
     case 'st': {
-      if (!m.id || m.id === me.id) return;
+      if (!validId(m.id) || m.id === me.id || !Number.isFinite(m.sq)) return;
       if ((seenStatus.get(m.id) || 0) >= m.sq) return;
       seenStatus.set(m.id, m.sq);
-      touchMember(m.id, { name: m.name, color: m.color, status: m });
-      if (m.ttl > 0) { const fw = JSON.stringify(Object.assign({}, m, { ttl: m.ttl - 1 })); for (const o of links.values()) if (o !== L && o.isOpen) o.sendRaw(fw); }
+      const s = cleanStatus(m);
+      touchMember(m.id, { name: s.name, color: s.color, status: s });
+      if (m.ttl > 0) { const fw = JSON.stringify(Object.assign({}, s, { ttl: Math.min(6, m.ttl) - 1 })); for (const o of links.values()) if (o !== L && o.isOpen) o.sendRaw(fw); }
       break;
     }
     case 'burst': {
+      if (typeof m.bid !== 'string' || !(m.n >= 1 && m.n <= 5000)) return;
       if (seenBurst.has(m.bid)) return;
       seenBurst.add(m.bid);
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
@@ -591,6 +620,7 @@ function handleMessage(L, m) {
     }
     case 'rp': case 'rq': onRtMsg(L, 'r', m); break;
     case 'rtstart': {
+      if (typeof m.id !== 'string' || !(m.rate >= 1 && m.rate <= 120) || !(m.size >= 0 && m.size <= 16384) || !(m.dur >= 1 && m.dur <= 120)) return;
       if (seenFlood.has('rs' + m.id)) return;
       seenFlood.add('rs' + m.id);
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
@@ -598,6 +628,8 @@ function handleMessage(L, m) {
       break;
     }
     case 'rtres': {
+      if (typeof m.id !== 'string' || !validId(m.from) || !Array.isArray(m.rows)) return;
+      m = cleanRt(m);
       const key = 'rr' + m.id + m.from;
       if (seenFlood.has(key)) return;
       seenFlood.add(key);
@@ -606,14 +638,16 @@ function handleMessage(L, m) {
       break;
     }
     case 'autostep': {
+      if (typeof m.id !== 'string') return;
       const key = 'as' + m.id + ':' + m.seq;
       if (seenFlood.has(key)) return;
       seenFlood.add(key);
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
-      if (!auto || auto.id !== m.id) { remoteAuto = { by: m.by, text: m.text, at: now() }; renderRemoteAuto(); }
+      if (!auto || auto.id !== m.id) { remoteAuto = { by: cleanName(m.by), text: txt(m.text).slice(0, 200), at: now() }; renderRemoteAuto(); }
       break;
     }
     case 'autores': {
+      if (!validResult(m.result)) return;
       const key = 'ar' + m.result.id;
       if (seenFlood.has(key)) return;
       seenFlood.add(key);
@@ -628,6 +662,22 @@ function handleMessage(L, m) {
     case 'tp-start': L.rx = { id: m.id, bytes: m.bytes, got: 0, t0: 0 }; break;
     case 'tp-done': if (L.tp && L.tp.id === m.id) L.tp.resolve(m); break;
   }
+}
+const ROUTES = new Set(['H', 'S', 'R', 'c', 'x', '-']);
+function cleanStatus(m) {
+  const ls = {};
+  if (m.links && typeof m.links === 'object') for (const [id, v] of Object.entries(m.links).slice(0, 64)) {
+    if (validId(id) && v && typeof v === 'object') ls[id] = { r: ROUTES.has(v.r) ? v.r : '-', rtt: num(v.rtt), n: num(v.n) };
+  }
+  return { t: 'st', id: m.id, sq: m.sq, name: cleanName(m.name), color: safeColor(m.color) || colorOf(m.id), beacon: !!m.beacon,
+    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n) };
+}
+function cleanRt(m) {
+  const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), k: r.k === 'u' ? 'u' : 'r',
+    sent: num(r.sent) || 0, got: num(r.got) || 0, loss: num(r.loss), p50: num(r.p50), p95: num(r.p95), p99: num(r.p99), max: num(r.max),
+    jit: num(r.jit), off: num(r.off), stalls: num(r.stalls) || 0, maxGap: num(r.maxGap) || 0, na: !!r.na }));
+  return { t: 'rtres', id: m.id, from: m.from, name: cleanName(m.name), rate: num(m.rate) || 0, size: num(m.size) || 0, dur: num(m.dur) || 0,
+    tickGap: num(m.tickGap) || 0, hidden: !!m.hidden, rows };
 }
 function onBinary(L, buf) {
   const r = L.rx;
@@ -652,6 +702,7 @@ function touchMember(id, info) {
   const m = members.get(id) || { name: id, color: colorOf(id) };
   const isNew = !members.has(id) || now() - m.rx > ONLINE_MS;
   Object.assign(m, info, { rx: now() });
+  m.name = cleanName(m.name); m.color = safeColor(m.color) || colorOf(id);
   members.set(id, m);
   if (isNew) log(`メンバー: ${m.name} を認識`);
   scheduleRender();
@@ -700,7 +751,7 @@ function joinRoom(r) {
   setSig('接続中…'); setRole();
   peer = new Peer(me.id, peerOpts());
   peer.on('open', () => {
-    setSig('接続済み', 'ok');
+    setSig('接続済み', 'ok'); scheduleRender();
     log('シグナリングサーバーに接続しました', 'ok');
     lastBeaconSeen = now();
     tryClaimBeacon(true);
@@ -773,7 +824,7 @@ function queryBeacon() {
     let m; try { m = JSON.parse(d); } catch { return; }
     if (m.t !== 'members') return;
     lastBeaconSeen = now();
-    const others = m.list.filter(id => id !== me.id);
+    const others = (Array.isArray(m.list) ? m.list : []).filter(id => validId(id) && id !== me.id).slice(0, 64);
     log(`参加者一覧を取得: ${others.length} 人`);
     for (const id of others) { joinTargets.add(id); if (!members.has(id)) members.set(id, { name: id, color: colorOf(id), rx: now() }); }
     clearTimeout(timer); c.close();
@@ -837,7 +888,7 @@ function meshTick() {
 }
 setInterval(meshTick, 1000);
 setInterval(() => { if ([...links.values()].some(L => L.isOpen)) sendStatus(); }, 2000);
-setInterval(() => { for (const L of links.values()) if (L.isOpen) { L.send({ t: 'sv', sv: stateVector() }); updateLinkStats(L); } }, 4000);
+setInterval(() => { for (const L of links.values()) if (L.isOpen) { L.send({ t: 'sv', ep: epoch, sv: stateVector() }); updateLinkStats(L); } }, 4000);
 
 function leaveRoom() {
   for (const L of links.values()) { L.send({ t: 'bye' }); }
@@ -873,7 +924,30 @@ function watchPc(L) {
     scheduleRender();
   });
 }
-const routeLetter = (a, b) => (a === 'relay' || b === 'relay') ? 'R' : (a === 'host' && b === 'host') ? 'H' : 'S';
+const routeLetter = (a, b, lan = true) => (a === 'relay' || b === 'relay') ? 'R' : (a === 'host' && b === 'host' && lan) ? 'H' : 'S';
+function expand6(a) {
+  const [h, t] = a.toLowerCase().split('%')[0].split('::');
+  const hs = h ? h.split(':') : [];
+  if (t == null) return hs;
+  const ts = t ? t.split(':') : [];
+  return [...hs, ...Array(Math.max(0, 8 - hs.length - ts.length)).fill('0'), ...ts];
+}
+// host⇄host also happens across networks (global IPv6, public IPv4). Addresses are only compared here, never stored or shown.
+function sameLan(a, b) {
+  if (!a || !b || /\.local$/i.test(a) || /\.local$/i.test(b)) return true; // hidden (mDNS) names only resolve on the same link
+  const v6 = a.includes(':');
+  if (v6 !== b.includes(':')) return true;
+  if (v6) {
+    const x = expand6(a), y = expand6(b);
+    if (/^f[cde]/.test(x[0]) && /^f[cde]/.test(y[0])) return true; // link-local / unique-local
+    return [0, 1, 2, 3].every(i => parseInt(x[i] || '0', 16) === parseInt(y[i] || '0', 16)); // same /64
+  }
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  const priv = o => o[0] === 10 || o[0] === 127 || (o[0] === 172 && o[1] >= 16 && o[1] < 32) || (o[0] === 192 && o[1] === 168) ||
+    (o[0] === 169 && o[1] === 254) || (o[0] === 100 && o[1] >= 64 && o[1] < 128);
+  if (priv(x) && priv(y)) return true;
+  return x[0] === y[0] && x[1] === y[1] && x[2] === y[2];
+}
 async function updateLinkStats(L) {
   const pc = L.pc;
   if (!pc || !L.isOpen) return;
@@ -884,10 +958,12 @@ async function updateLinkStats(L) {
     if (!pair) stats.forEach(r => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
     if (!pair) return;
     const lc = stats.get(pair.localCandidateId), rc = stats.get(pair.remoteCandidateId);
-    const r = routeLetter(lc && lc.candidateType, rc && rc.candidateType);
-    if (r !== L.route) log(`経路 (${L.name}): ${lc && lc.candidateType} ⇄ ${rc && rc.candidateType} / ${lc && lc.protocol}`);
+    const lan = sameLan(lc && (lc.address || lc.ip), rc && (rc.address || rc.ip));
+    const r = routeLetter(lc && lc.candidateType, rc && rc.candidateType, lan);
+    const far = lan ? '' : '（別ネットワーク）';
+    if (r !== L.route) log(`経路 (${L.name}): ${lc && lc.candidateType} ⇄ ${rc && rc.candidateType} / ${lc && lc.protocol}${far}`);
     L.route = r;
-    L.routeDetail = `${lc && lc.candidateType}⇄${rc && rc.candidateType} ${lc && lc.protocol || ''}`;
+    L.routeDetail = `${lc && lc.candidateType}⇄${rc && rc.candidateType} ${lc && lc.protocol || ''}${far}`;
     if (pair.currentRoundTripTime != null) L.rtt = Math.round(pair.currentRoundTripTime * 1000);
     scheduleRender();
   } catch {}
@@ -943,7 +1019,11 @@ $('burstBtn').onclick = () => {
   for (const L of links.values()) if (L.isOpen) L.send(m);
   runBurst(m);
 };
-$('clearBtn').onclick = () => localOp({ k: 'x' });
+$('clearBtn').onclick = () => {
+  if (!confirm('マス目・チャット・操作ログを全端末で消去しますか？')) return;
+  adoptEpoch(epoch + 1, null);
+  log(`共有データを全消去しました（操作ログも破棄）`);
+};
 
 // ---------- Realtime test (game-like traffic) ----------
 const wallNow = () => performance.timeOrigin + performance.now();
@@ -971,7 +1051,7 @@ function startRt(m) {
   if (rt && !rt.done) { log('リアルタイムテストは実行中です', 'warn'); return; }
   const interval = 1000 / m.rate;
   rt = { id: m.id, rate: m.rate, size: m.size, dur: m.dur, start: now(), seq: 0, peers: new Map(), rx: new Map(),
-    lastTick: now(), maxTickGap: 0, done: false, pad: 'x'.repeat(Math.max(0, m.size - 70)) };
+    lastTick: now(), maxTickGap: 0, done: false, hid: document.hidden, pad: 'x'.repeat(Math.max(0, m.size - 70)) };
   const peersNow = [...links.values()].filter(L => L.isOpen).length;
   log(`リアルタイムテスト開始: ${m.rate} 回/秒 × ${m.size} B × ${m.dur} 秒（${m.fromName} が開始, 直接接続 ${peersNow}）`);
   $('rtStatus').textContent = `計測中…（${m.dur} 秒）`;
@@ -1037,7 +1117,7 @@ function finishRt(run) {
   const rows = [];
   for (const [pid, P] of run.peers) for (const k of ['r', 'u']) rows.push(Object.assign({ to: P.name, k }, summarize(P[k], run.rx.get(pid + k))));
   const msg = { t: 'rtres', id: run.id, from: me.id, name: me.name, rate: run.rate, size: run.size, dur: run.dur,
-    tickGap: Math.round(run.maxTickGap), hidden: document.hidden, rows };
+    tickGap: Math.round(run.maxTickGap), hidden: run.hid || document.hidden, rows };
   seenFlood.add('rr' + run.id + me.id);
   for (const L of links.values()) if (L.isOpen) L.send(msg);
   storeRtResult(msg);
@@ -1074,7 +1154,7 @@ function renderRt() {
       const cls = v.startsWith('◎') || v.startsWith('○') ? 'ok' : v.startsWith('△') ? 'warn' : v.startsWith('×') ? 'ng' : '';
       h += `<tr><td>${esc(m.name)} → ${esc(r.to)}</td><td>${isU ? '高速' : '確実'}</td>`;
       if (r.na) { h += '<td colspan="9" class="ng">高速チャネル使用不可</td></tr>'; continue; }
-      h += `<td>${r.sent ? (100 - r.loss).toFixed(1) + '%' : '-'}</td><td>${f0(r.p50)}</td><td>${f0(r.p95)}</td><td>${f0(r.p99)}</td><td>${f0(r.max)}</td>
+      h += `<td>${r.sent && r.loss != null ? (100 - r.loss).toFixed(1) + '%' : '-'}</td><td>${f0(r.p50)}</td><td>${f0(r.p95)}</td><td>${f0(r.p99)}</td><td>${f0(r.max)}</td>
         <td>${f0(r.jit)}</td><td>${r.stalls}${r.maxGap > 100 ? ` <span class="hint">(最大${f0(r.maxGap)})</span>` : ''}</td>
         <td>${r.off == null ? '-' : (r.off >= 0 ? '+' : '') + r.off.toFixed(0)}</td><td class="${cls}">${v}</td></tr>`;
     }
@@ -1098,6 +1178,7 @@ setInterval(() => {
   if (g > 1500) log(`処理が ${(g / 1000).toFixed(1)} 秒止まっていました（バックグラウンド・画面オフ・スリープ）`, 'warn');
   lastBeat = now();
 }, 250);
+document.addEventListener('visibilitychange', () => { if (document.hidden && rt && !rt.done) rt.hid = true; });
 document.addEventListener('visibilitychange', () => log(document.hidden ? 'ページが非表示になりました（バックグラウンド）' : 'ページが再表示されました'));
 
 async function speedTest(L, mbArg) {
@@ -1301,14 +1382,14 @@ function render() {
   // grid
   const cells = gridEl.children;
   for (let i = 0; i < GRID; i++) {
-    const v = grid[i] ? grid[i].v : '';
+    const v = grid[i] ? safeColor(grid[i].v) : '';
     if (cells[i].__v !== v) { cells[i].style.background = v || ''; cells[i].__v = v; }
   }
   // chat
   if (chatDirty) {
     chatDirty = false;
     chatOps.sort(stampCmp);
-    $('chat').innerHTML = chatOps.slice(-200).map(o => `<div><span class="dot" style="background:${esc(o.col || colorOf(o.o))}"></span><b>${esc(o.n)}</b>: ${esc(o.v)}</div>`).join('');
+    $('chat').innerHTML = chatOps.slice(-200).map(o => `<div><span class="dot" style="background:${safeColor(o.col) || colorOf(o.o)}"></span><b>${esc(cleanName(o.n))}</b>: ${esc(txt(o.v).slice(0, 2000))}</div>`).join('');
     $('chat').scrollTop = 1e9;
   }
   // matrix
@@ -1324,7 +1405,7 @@ function render() {
     html += `<tr${online ? '' : ' style="opacity:.45"'}><th><span class="dot" style="background:${esc(m.color || colorOf(id))}"></span>${esc(m.name)}${online ? '' : '（応答なし）'}</th>`;
     for (const col of ids) html += col === id ? '<td class="c hint">—</td>' : `<td class="c">${s ? routeCell(s.links && s.links[col]) : '?'}</td>`;
     const h = s ? s.h : '?';
-    html += `<td class="mono ${h === myH ? 'ok' : 'ng'}">${esc(h)}</td><td class="mono">${s ? s.n : '?'}</td></tr>`;
+    html += `<td class="mono ${h === myH ? 'ok' : 'ng'}">${esc(h)}</td><td class="mono">${s && s.n != null ? s.n : '?'}</td></tr>`;
   }
   $('matrix').innerHTML = html;
   // banner
@@ -1440,7 +1521,8 @@ async function runRtAndCollect(cfg) {
   const fastNA = [...res.values()].some(x => x.rows.some(r => r.k === 'u' && r.na));
   const offs = [...res.values()].flatMap(x => x.rows.filter(r => r.k === 'r' && r.off != null).map(r => Math.abs(r.off)));
   const tickGap = Math.max(0, ...[...res.values()].map(x => x.tickGap || 0));
-  return { devices: res.size, expected, u: agg('u'), r: agg('r'), fastNA, off: offs.length ? Math.max(...offs) : null, tickGap,
+  const bg = [...res.values()].filter(x => x.hidden || x.tickGap > 3 * 1000 / cfg.rate + 30).map(x => x.name);
+  return { devices: res.size, expected, u: agg('u'), r: agg('r'), fastNA, off: offs.length ? Math.max(...offs) : null, tickGap, bg,
     missing: onlineOthers().filter(([pid]) => !res.has(pid)).map(([, mm]) => mm.name) };
 }
 function rtVerdictOf(res) {
@@ -1528,7 +1610,7 @@ async function runAuto() {
       await waitFor(() => meshSummary().pending === 0, 20000, 500);
       const ms = M.mesh = meshSummary();
       stepEnd(st, ms.ok === ms.pairs ? 'pass' : ms.ok ? 'warn' : 'fail',
-        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / NAT越え ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : ''));
+        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : ''));
 
       st = stepStart(`共有データの同期（全員が同時に ${prof.burst} 回書き込み）`);
       const bm = { t: 'burst', bid: rand(8), n: prof.burst, from: me.id, fromName: me.name };
@@ -1549,8 +1631,9 @@ async function runAuto() {
         if (r.fastNA) detail += '｜高速モード使用不可（確実モードで判定）';
         if (r.u && r.r && r.r.p99 > r.u.p99 * 2 + 20) detail += `｜確実モードは再送待ちで p99 ${f0(r.r.p99)}ms`;
         if (r.missing.length) detail += `｜結果なし: ${r.missing.join(', ')}`;
-        if (r.tickGap > 3 * 1000 / cfg.rate + 30) detail += `｜送信が最大 ${r.tickGap}ms 遅れた端末あり`;
-        stepEnd(st, base ? (r.missing.length ? 'warn' : vStatus(v)) : 'fail', detail);
+        if (r.bg.length) detail += `｜参考値: バックグラウンド/送信遅延（最大 ${r.tickGap}ms）の端末あり（${r.bg.join(', ')}）→ 前面にして再実行を`;
+        const vs = vStatus(v);
+        stepEnd(st, !base ? 'fail' : r.missing.length || (r.bg.length && vs === 'pass') ? 'warn' : vs, detail);
       }
 
       st = stepStart(`データ転送速度（${prof.mb} MB を各相手へ）`);
@@ -1561,25 +1644,30 @@ async function runAuto() {
       stepEnd(st, minMbps == null ? 'skip' : minMbps >= 5 ? 'pass' : minMbps >= 1 ? 'warn' : 'fail',
         sp.length ? sp.map(x => `${x.to}: ${x.mbps ? x.mbps.toFixed(1) + ' Mbps' : '失敗'}`).join(' / ') : '直接接続なし');
 
-      st = stepStart('切断からの自動復帰');
-      const target = [...links.values()].find(L => L.isOpen && L.kind === 'peerjs');
-      if (!target) { M.reconnect = null; stepEnd(st, 'skip', 'PeerJS の接続がないため未実施（手動接続は自動復帰しません）'); }
+      st = stepStart('切断からの自動復帰（全相手）');
+      const targets = [...links.values()].filter(L => L.isOpen && L.kind === 'peerjs').map(L => [L.peerId, L.name]);
+      if (!targets.length) { M.reconnect = null; stepEnd(st, 'skip', 'PeerJS の接続がないため未実施（手動接続は自動復帰しません）'); }
       else {
-        const pid = target.peerId, name = target.name, times = [];
-        for (let i = 0; i < prof.reconnect; i++) {
-          const L = links.get(pid);
-          if (!L || !L.isOpen) break;
-          const t0 = now();
-          L.close('自動テスト（意図的な切断）');
-          const ok = await waitFor(() => { const x = links.get(pid); return x && x.isOpen; }, 20000, 100);
-          times.push(ok ? Math.round(now() - t0) : null);
-          await sleep(1500);
+        const per = [];
+        for (const [pid, name] of targets) {
+          const times = [];
+          for (let i = 0; i < prof.reconnect; i++) {
+            const L = links.get(pid);
+            if (!L || !L.isOpen) { times.push(null); continue; }
+            const t0 = now();
+            L.close('自動テスト（意図的な切断）');
+            const ok = await waitFor(() => { const x = links.get(pid); return x && x.isOpen; }, 20000, 100);
+            times.push(ok ? Math.round(now() - t0) : null);
+            await sleep(1500);
+          }
+          per.push({ to: name, times });
         }
-        M.reconnect = { to: name, times };
-        const allOk = times.length && times.every(t => t != null);
+        const times = per.flatMap(p => p.times);
+        M.reconnect = { to: per.map(p => p.to).join(', '), times, per };
+        const allOk = times.every(t => t != null);
         const worst = allOk ? Math.max(...times) : null;
         stepEnd(st, !allOk ? 'fail' : worst <= 5000 ? 'pass' : 'warn',
-          `${name} との接続を ${times.length} 回切断 → ` + times.map(t => t == null ? '復帰せず' : (t / 1000).toFixed(1) + ' 秒').join(', '));
+          per.map(p => `${p.to}: ` + p.times.map(t => t == null ? '復帰せず' : (t / 1000).toFixed(1) + ' 秒').join(', ')).join(' / '));
       }
 
       st = stepStart('端末間の時計のずれ');
@@ -1628,7 +1716,7 @@ function deriveCaps(M) {
   const ms = M.mesh;
   add('lan', '同じネットワーク内の端末と直接接続', ms && ms.H ? 'ok' : 'na', ms && ms.H ? `同一LAN の組 ${ms.H} 組で直接接続` : '同じネットワーク内の相手とは未検証');
   const d = M.diag;
-  if (ms && ms.S) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ok', `NAT 越えの組 ${ms.S} 組で直接接続`);
+  if (ms && ms.S) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ok', `別ネットワークの組 ${ms.S} 組で直接接続`);
   else if (d && d.stunCount && !d.srflx) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN（UDP）が通らない → TURN 中継が必要');
   else if (d && !d.stunCount) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN 未設定のため不可');
   else add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', d && d.symmetric ? 'cond' : 'na',
@@ -1647,7 +1735,9 @@ function deriveCaps(M) {
     const ev = base ? `p95 ${f0(base.p95)}ms・ロス ${base.loss.toFixed(1)}%（最悪の組）` : '結果なし';
     let status = vStatus(v) === 'pass' ? 'ok' : vStatus(v) === 'warn' ? 'cond' : 'ng';
     if (strict && v.startsWith('○')) status = 'cond';
-    add(key, title, status, `${v}｜${ev}`);
+    const bg = res.bg && res.bg.length;
+    if (bg && status === 'ok') status = 'cond';
+    add(key, title, status, `${v}｜${ev}` + (bg ? '｜参考値（バックグラウンドの端末あり。前面にして再実行を）' : ''));
   };
   rtCap('coop', 'リアルタイム協力・早押しクイズ（30 回/秒）', M.rt30, false);
   rtCap('action', 'リアルタイム対戦アクション（60 回/秒）', M.rt60, true);
@@ -1684,7 +1774,19 @@ function showResult(r, el) {
 // ---- history / save ----
 let lastResult = null;
 const HKEY = 'p2pt.history';
-const loadHist = () => { const h = store.get(HKEY, []); return Array.isArray(h) ? h : []; };
+const CAP_STATUS = new Set(['ok', 'cond', 'ng', 'na']);
+const str = v => typeof v === 'string';
+// Results come from other devices and from imported files: a malformed one must never reach the renderers.
+function validResult(r) {
+  try {
+    return !!r && typeof r === 'object' && str(r.id) && r.id.length <= 40 && Number.isFinite(r.ts) && str(r.by) &&
+      Array.isArray(r.caps) && r.caps.length <= 60 && r.caps.every(c => c && str(c.key) && str(c.title) && str(c.reason) && CAP_STATUS.has(c.status)) &&
+      Array.isArray(r.participants) && r.participants.length <= 64 && r.participants.every(str) &&
+      Array.isArray(r.steps) && r.steps.length <= 60 && r.steps.every(x => x && str(x.title) && Object.prototype.hasOwnProperty.call(ICON, x.status)) &&
+      !!r.device && typeof r.device === 'object' && JSON.stringify(r).length < 200000;
+  } catch { return false; }
+}
+const loadHist = () => { const h = store.get(HKEY, []); return Array.isArray(h) ? h.filter(validResult) : []; };
 function saveResult(r) {
   const h = loadHist().filter(x => x.id !== r.id);
   h.push(r);
@@ -1722,7 +1824,7 @@ $('histImport').onchange = async e => {
   for (const f of e.target.files) {
     try {
       const data = JSON.parse(await f.text());
-      for (const r of [].concat(data)) if (r && r.id && Array.isArray(r.caps)) { saveResult(Object.assign({}, r, { imported: true })); n++; }
+      for (const r of [].concat(data)) if (validResult(r)) { saveResult(Object.assign({}, r, { imported: true })); n++; }
     } catch { log(`読み込めませんでした: ${f.name}`, 'warn'); }
   }
   log(`${n} 件の結果を読み込みました`, n ? 'ok' : 'warn');

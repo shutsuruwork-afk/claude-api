@@ -22,10 +22,15 @@
     以降は ID の小さい側が接続を開始してフルメッシュを維持し、状態 (`st`) をフラッディングで共有。
   - 同期: 操作ログ型 CRDT（Lamport 時刻 + 端末 ID で LWW）。操作は全接続に転送し、
     定期的な state vector (`sv`) 交換で欠けを補う。ハッシュは操作 ID の XOR（順序非依存）。
+    「全消去」は epoch を 1 つ進める（`adoptEpoch`）。古い epoch の操作は全端末で破棄され、`sv` の `ep` で伝わる。
   - 手動モード: SDP をコピー＆ペーストで交換。STUN (stun.l.google.com) のみ使用。
   - リアルタイム通信テスト: 各接続の RTCPeerConnection に negotiated な非信頼 DataChannel（id 100, ordered:false,
     maxRetransmits:0）を追加し、メインの信頼チャネルと比較。開始 (`rtstart`) と結果 (`rtres`) はフラッディングで全員に配る。
+  - **他端末から届く値は信用しない。** メッセージは `handleMessage` で型・範囲を確認し、状態は `cleanStatus` / `cleanRt` / `validResult` を通してから保存・表示する。
+    色は `safeColor`、文字列は `esc`/`txt` を必ず通す（`String(x)` は細工された値で例外になるので使わない）。新しいメッセージ種別を足すときも同じ。
+  - 経路の `H`/`S` は `sameLan` で候補アドレスを比較して決める（アドレスは比較にだけ使い、保存・表示しない）。
 - `.nojekyll` — GitHub Pages で Jekyll 処理を無効化。
+- `tests/` — E2E テスト（`e2e.js`、ローカル PeerJS サーバー + Playwright）。`.github/workflows/test.yml` が push ごとに実行。
 - 自動テスト（`runAuto`）: 端末単体の確認 → ルーム全員でのテストを順に実行し、`deriveCaps` で
   「使える/条件付き/使えない/未検証」を判定。進捗 (`autostep`) と結果 (`autores`) はフラッディングで全員に配り、
   各端末の localStorage（`p2pt.history`、最大 100 件）に保存。結果には IP を含めない（`maskIps` を通す）。
@@ -44,3 +49,14 @@ python3 -m http.server 8000   # http://localhost:8000/
 多人数のテストは、npm の `peer` パッケージでローカルに PeerJS サーバーを立て
 （例: `ExpressPeerServer` を 127.0.0.1:9000 で起動）、ページの「設定」でそのサーバーを指定する。
 Playwright で複数の browser context を開けば 3〜5 台構成を自動テストできる。
+
+これをまとめたものが `tests/e2e.js`:
+
+```sh
+cd tests && npm install && npx playwright install chromium && npm test
+node e2e.js 窓口          # 名前に「窓口」を含むテストだけ
+SKIP_SLOW=1 npm test     # 自動テスト（約 1 分）を省略
+CHROMIUM_PATH=/path/to/chromium npm test   # インストール済みの Chromium を使う
+```
+
+`index.html` の挙動を変えたら、対応するテストを `tests/e2e.js` に足してから push する。
