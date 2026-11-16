@@ -21,6 +21,8 @@
   - 同期: 操作ログ型 CRDT（Lamport 時刻 + 端末 ID で LWW）。操作は全接続に転送し、
     定期的な state vector (`sv`) 交換で欠けを補う。ハッシュは操作 ID の XOR（順序非依存）。
   - 手動モード: SDP をコピー＆ペーストで交換。STUN (stun.l.google.com) のみ使用。
+  - リアルタイム通信テスト: 各接続の RTCPeerConnection に negotiated な非信頼 DataChannel（id 100, ordered:false,
+    maxRetransmits:0）を追加し、メインの信頼チャネルと比較。開始 (`rtstart`) と結果 (`rtres`) はフラッディングで全員に配る。
 - `.nojekyll` — GitHub Pages で Jekyll 処理を無効化。
 - `TESTING.md` — 実機テストのチェックリストと記録表。
 - 「結果レポートをコピー」はテキストを生成する際に IP アドレスを `[IP]` に伏せる。レポートに新しい項目を足すときも IP を含めない。

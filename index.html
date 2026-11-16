@@ -117,6 +117,23 @@
     </div>
   </section>
 
+  <!-- ===== Realtime ===== -->
+  <section>
+    <h2>リアルタイム通信テスト（ゲーム向け）</h2>
+    <p class="hint">全員が同時に、ゲームのような頻度で小さなメッセージを送り合い、遅延のばらつき・ロス・途切れを測ります。
+      「確実」= 届くまで再送（チャット・ターン制向け）、「高速」= 再送しない（位置情報など最新値だけ届けばよいデータ向け）。</p>
+    <div class="row">
+      <select id="rtRate"><option value="20">20 回/秒</option><option value="30" selected>30 回/秒</option><option value="60">60 回/秒</option></select>
+      <select id="rtSize"><option value="64">64 B</option><option value="256" selected>256 B</option><option value="1024">1 KB</option></select>
+      <select id="rtDur"><option value="10">10 秒</option><option value="30" selected>30 秒</option><option value="60">60 秒</option></select>
+      <button class="primary" id="rtBtn" disabled>全員で開始</button>
+    </div>
+    <div id="rtStatus" class="hint"></div>
+    <div class="scroll"><table id="rtTable"></table></div>
+    <p class="hint">判定の目安（高速モードの p95 とロス）: ◎ アクション可（&lt;50ms, ロス&lt;1%） / ○ 一般的なリアルタイム可（&lt;100ms, &lt;3%） / △ ロス多め（&lt;100ms だがロス 3% 以上 → 確実モードを使う） / △ ゆっくりした同期向け（&lt;200ms） / × ターン制向け。<br>
+      p95 = 95% の通信がこの時間以内（たまに来る遅れを表す）。途切れ = 相手からの受信が 100ms 以上止まった回数。時計ずれ = 相手の時計 − 自分の時計（推定）。</p>
+  </section>
+
   <!-- ===== Direct links ===== -->
   <section>
     <h2>自分の直接接続</h2>
@@ -454,6 +471,7 @@ function afterRegisteredOpen(L) {
   L.send({ t: 'sv', sv: stateVector() });
   sendStatus();
   watchPc(L);
+  setupRtChannel(L);
   setTimeout(() => updateLinkStats(L), 500);
   enableShared(true);
 }
@@ -516,6 +534,22 @@ function handleMessage(L, m) {
       seenBurst.add(m.bid);
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
       runBurst(m);
+      break;
+    }
+    case 'rp': case 'rq': onRtMsg(L, 'r', m); break;
+    case 'rtstart': {
+      if (seenFlood.has('rs' + m.id)) return;
+      seenFlood.add('rs' + m.id);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      startRt(m);
+      break;
+    }
+    case 'rtres': {
+      const key = 'rr' + m.id + m.from;
+      if (seenFlood.has(key)) return;
+      seenFlood.add(key);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      storeRtResult(m);
       break;
     }
     case 'bye': L.close('bye'); break;
@@ -827,6 +861,161 @@ $('burstBtn').onclick = () => {
 };
 $('clearBtn').onclick = () => localOp({ k: 'x' });
 
+// ---------- Realtime test (game-like traffic) ----------
+const wallNow = () => performance.timeOrigin + performance.now();
+const seenFlood = new Set();
+const RT_ID = 100; // negotiated SCTP stream id for the unreliable channel
+function setupRtChannel(L) {
+  const pc = L.pc;
+  if (!pc || L.rtdc) return;
+  try {
+    const dc = pc.createDataChannel('p2pt-rt', { negotiated: true, id: RT_ID, ordered: false, maxRetransmits: 0 });
+    dc.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } onRtMsg(L, 'u', m); };
+    L.rtdc = dc;
+  } catch (e) { log(`高速（再送なし）チャネルを作れません (${L.name}): ${e.message}`, 'warn'); }
+}
+function rtSend(L, k, obj) {
+  if (k === 'r') return L.send(obj);
+  const dc = L.rtdc;
+  if (!dc || dc.readyState !== 'open') return false;
+  try { dc.send(JSON.stringify(obj)); return true; } catch { return false; }
+}
+let rt = null;          // running test
+const rtResults = new Map(); // testId -> Map(from -> result msg)
+function newStat() { return { sent: 0, rtts: [], offs: [], pend: new Map(), unavailable: false }; }
+function startRt(m) {
+  if (rt && !rt.done) { log('リアルタイムテストは実行中です', 'warn'); return; }
+  const interval = 1000 / m.rate;
+  rt = { id: m.id, rate: m.rate, size: m.size, dur: m.dur, start: now(), seq: 0, peers: new Map(), rx: new Map(),
+    lastTick: now(), maxTickGap: 0, done: false, pad: 'x'.repeat(Math.max(0, m.size - 70)) };
+  const peersNow = [...links.values()].filter(L => L.isOpen).length;
+  log(`リアルタイムテスト開始: ${m.rate} 回/秒 × ${m.size} B × ${m.dur} 秒（${m.fromName} が開始, 直接接続 ${peersNow}）`);
+  $('rtStatus').textContent = `計測中…（${m.dur} 秒）`;
+  const run = rt;
+  const tick = () => {
+    if (run.done) return;
+    const t = now();
+    run.maxTickGap = Math.max(run.maxTickGap, t - run.lastTick);
+    run.lastTick = t;
+    if (t - run.start >= run.dur * 1000) { clearInterval(run.iv); setTimeout(() => finishRt(run), 1500); return; }
+    const s = ++run.seq;
+    for (const L of links.values()) {
+      if (!L.isOpen) continue;
+      if (!run.peers.has(L.peerId)) run.peers.set(L.peerId, { name: L.name, r: newStat(), u: newStat() });
+      const P = run.peers.get(L.peerId);
+      for (const k of ['r', 'u']) {
+        const st = P[k];
+        if (rtSend(L, k, { t: 'rp', id: run.id, k, s, p: run.pad })) { st.sent++; st.pend.set(s, { t, w: wallNow() }); }
+        else if (k === 'u') st.unavailable = true;
+      }
+    }
+    const el = Math.min(run.dur, (t - run.start) / 1000);
+    if (s % run.rate === 0) $('rtStatus').textContent = `計測中… ${el.toFixed(0)} / ${run.dur} 秒`;
+  };
+  run.iv = setInterval(tick, interval);
+}
+function onRtMsg(L, k, m) {
+  if (m.t === 'rp') {
+    rtSend(L, k, { t: 'rq', id: m.id, k, s: m.s, w: wallNow() });
+    if (rt && rt.id === m.id && !rt.done) { // receive smoothness
+      const key = L.peerId + k, t = now();
+      const r = rt.rx.get(key) || { last: 0, maxGap: 0, stalls: 0 };
+      if (r.last) { const g = t - r.last; r.maxGap = Math.max(r.maxGap, g); if (g > 100) r.stalls++; }
+      r.last = t; rt.rx.set(key, r);
+    }
+  } else if (m.t === 'rq') {
+    if (!rt || rt.id !== m.id) return;
+    const P = rt.peers.get(L.peerId);
+    const st = P && P[k];
+    const p = st && st.pend.get(m.s);
+    if (!p) return;
+    st.pend.delete(m.s);
+    const rtt = now() - p.t;
+    st.rtts.push(rtt);
+    st.offs.push({ rtt, off: m.w - (p.w + rtt / 2) });
+  }
+}
+const pct = (a, q) => a.length ? a[Math.min(a.length - 1, Math.floor(q * a.length))] : null;
+function summarize(st, rx) {
+  const a = [...st.rtts].sort((x, y) => x - y);
+  let jit = 0;
+  for (let i = 1; i < st.rtts.length; i++) jit += Math.abs(st.rtts[i] - st.rtts[i - 1]);
+  jit = st.rtts.length > 1 ? jit / (st.rtts.length - 1) : null;
+  const best = [...st.offs].sort((x, y) => x.rtt - y.rtt).slice(0, Math.max(3, Math.ceil(st.offs.length * 0.1)));
+  const offs = best.map(o => o.off).sort((x, y) => x - y);
+  return { sent: st.sent, got: st.rtts.length, loss: st.sent ? (1 - st.rtts.length / st.sent) * 100 : null,
+    p50: pct(a, .5), p95: pct(a, .95), p99: pct(a, .99), max: a.length ? a[a.length - 1] : null, jit,
+    off: offs.length ? offs[Math.floor(offs.length / 2)] : null,
+    stalls: rx ? rx.stalls : 0, maxGap: rx ? rx.maxGap : 0, na: st.unavailable && !st.sent };
+}
+function finishRt(run) {
+  run.done = true;
+  const rows = [];
+  for (const [pid, P] of run.peers) for (const k of ['r', 'u']) rows.push(Object.assign({ to: P.name, k }, summarize(P[k], run.rx.get(pid + k))));
+  const msg = { t: 'rtres', id: run.id, from: me.id, name: me.name, rate: run.rate, size: run.size, dur: run.dur,
+    tickGap: Math.round(run.maxTickGap), hidden: document.hidden, rows };
+  seenFlood.add('rr' + run.id + me.id);
+  for (const L of links.values()) if (L.isOpen) L.send(msg);
+  storeRtResult(msg);
+  const u = rows.filter(r => r.k === 'u' && r.got);
+  $('rtStatus').textContent = `完了（${run.rate} 回/秒 × ${run.size} B × ${run.dur} 秒）。他の端末の結果も届き次第表示されます`;
+  log(`リアルタイムテスト完了: ${u.map(r => `${r.to} p95=${r.p95.toFixed(0)}ms ロス${r.loss.toFixed(1)}%`).join(', ') || '結果なし'}`, 'ok');
+}
+function storeRtResult(m) {
+  if (!rtResults.has(m.id)) rtResults.set(m.id, new Map());
+  rtResults.get(m.id).set(m.from, m);
+  rtLatest = m.id;
+  renderRt();
+}
+let rtLatest = null;
+function verdict(r) {
+  if (!r || r.p95 == null) return '-';
+  if (r.p95 < 50 && r.loss < 1) return '◎ アクション可';
+  if (r.p95 < 100 && r.loss < 3) return '○ リアルタイム可';
+  if (r.p95 < 100) return '△ ロス多め（確実モードなら可）';
+  if (r.p95 < 200) return '△ ゆっくり同期' + (r.loss >= 3 ? '・ロス多め' : '');
+  return '× ターン制向け';
+}
+const f0 = v => v == null ? '-' : v.toFixed(0);
+function renderRt() {
+  const res = rtResults.get(rtLatest);
+  if (!res) return;
+  let h = '<tr><th>端末 → 相手</th><th>方式</th><th>受信率</th><th>p50</th><th>p95</th><th>p99</th><th>最大</th><th>ジッター</th><th>途切れ</th><th>時計ずれ</th><th>判定</th></tr>';
+  const all = [...res.values()].sort((a, b) => a.name.localeCompare(b.name));
+  for (const m of all) {
+    if (!m.rows.length) h += `<tr><td>${esc(m.name)}</td><td colspan="10" class="hint">直接接続なし</td></tr>`;
+    for (const r of m.rows) {
+      const isU = r.k === 'u';
+      const v = isU ? verdict(r) : '';
+      const cls = v.startsWith('◎') || v.startsWith('○') ? 'ok' : v.startsWith('△') ? 'warn' : v.startsWith('×') ? 'ng' : '';
+      h += `<tr><td>${esc(m.name)} → ${esc(r.to)}</td><td>${isU ? '高速' : '確実'}</td>`;
+      if (r.na) { h += '<td colspan="9" class="ng">高速チャネル使用不可</td></tr>'; continue; }
+      h += `<td>${r.sent ? (100 - r.loss).toFixed(1) + '%' : '-'}</td><td>${f0(r.p50)}</td><td>${f0(r.p95)}</td><td>${f0(r.p99)}</td><td>${f0(r.max)}</td>
+        <td>${f0(r.jit)}</td><td>${r.stalls}${r.maxGap > 100 ? ` <span class="hint">(最大${f0(r.maxGap)})</span>` : ''}</td>
+        <td>${r.off == null ? '-' : (r.off >= 0 ? '+' : '') + r.off.toFixed(0)}</td><td class="${cls}">${v}</td></tr>`;
+    }
+    if (m.tickGap > 3 * 1000 / m.rate + 30 || m.hidden) h += `<tr><td colspan="11" class="warn">${esc(m.name)}: 送信タイマーが最大 ${m.tickGap}ms 遅れました${m.hidden ? '（画面が非表示）' : ''}</td></tr>`;
+  }
+  h += '<tr><td colspan="11" class="hint">単位: ms。受信率は往復で届いた割合。</td></tr>';
+  $('rtTable').innerHTML = h;
+}
+$('rtBtn').onclick = () => {
+  if (rt && !rt.done) return;
+  const m = { t: 'rtstart', id: rand(8), rate: Number($('rtRate').value), size: Number($('rtSize').value), dur: Number($('rtDur').value), fromName: me.name };
+  seenFlood.add('rs' + m.id);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+  startRt(m);
+};
+
+// ---------- Background / sleep detection ----------
+let lastBeat = now();
+setInterval(() => {
+  const g = now() - lastBeat;
+  if (g > 1500) log(`処理が ${(g / 1000).toFixed(1)} 秒止まっていました（バックグラウンド・画面オフ・スリープ）`, 'warn');
+  lastBeat = now();
+}, 250);
+document.addEventListener('visibilitychange', () => log(document.hidden ? 'ページが非表示になりました（バックグラウンド）' : 'ページが再表示されました'));
+
 async function speedTest(L) {
   if (!L.isOpen || L.tp) return;
   const mb = Number($('tpSize').value), bytes = mb << 20, CH = 16384;
@@ -991,7 +1180,7 @@ let enabled = false;
 function enableShared(on) {
   enabled = on || enabled;
   if (!on && ![...links.values()].some(L => L.isOpen)) enabled = false;
-  for (const id of ['burstBtn', 'clearBtn', 'msg', 'send']) $(id).disabled = !enabled;
+  for (const id of ['burstBtn', 'clearBtn', 'msg', 'send', 'rtBtn']) $(id).disabled = !enabled;
 }
 // allow solo use too once in a room / linked
 function sendChat() {
@@ -1106,6 +1295,9 @@ function buildReport() {
   L.push('');
   L.push(`## 一斉書き込みテスト: ${$('burstResult').textContent || '(未実施)'}`);
   L.push('');
+  L.push(`## リアルタイム通信テスト: ${$('rtStatus').textContent || '(未実施)'}`);
+  for (const tr of $('rtTable').querySelectorAll('tr')) L.push([...tr.children].map(c => c.textContent.trim() || '-').join(' | '));
+  L.push('');
   L.push('## ログ（直近 60 行）');
   L.push(...[...$('log').children].slice(-60).map(e => e.textContent));
   return maskIps(L.join('\n'));
@@ -1123,7 +1315,7 @@ $('reportBtn').onclick = async () => {
 // Room UI
 // =====================================================================
 const params = new URLSearchParams(location.search);
-$('room').value = params.get('room') || 'room-' + rand(4);
+$('room').value = params.get('room') || 'room-' + rand(6);
 $('joinBtn').onclick = () => { const r = $('room').value.trim(); if (r) { joinRoom(r); enableShared(true); } };
 $('leaveBtn').onclick = leaveRoom;
 $('room').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) $('joinBtn').click(); });
