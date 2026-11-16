@@ -678,9 +678,14 @@ function scheduleStatus() {
 // =====================================================================
 // PeerJS signaling, room bootstrap (beacon), mesh maintenance
 // =====================================================================
-let peer = null, beaconPeer = null, beaconOpen = false, room = null, lastBeaconSeen = 0, lastBeaconQuery = 0;
+let peer = null, beaconPeer = null, beaconOpen = false, room = null, lastBeaconSeen = 0, lastBeaconQuery = 0, lastClaimTry = 0;
 const peerOpts = () => Object.assign({ config: rtcConfig(), debug: 1 }, CFG.server || {});
-const beaconIdOf = r => 'p2pt-room-' + r.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+// PeerJS IDs must be alphanumeric words joined by single - or _. Other names (e.g. Japanese, spaces)
+// are replaced by a hash of the name, so every name is valid and different names never share an ID.
+const beaconIdOf = r => {
+  const n = r.normalize('NFKC').trim().toLowerCase();
+  return 'p2pt-room-' + (/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(n) ? n : 'x' + cyrb53(n).map(x => x.toString(36)).join(''));
+};
 
 function setSig(text, cls) { $('sigState').textContent = text; $('sigState').className = cls || ''; }
 function setRole() {
@@ -725,6 +730,7 @@ function joinRoom(r) {
 
 function tryClaimBeacon(queryIfTaken) {
   if (!room || beaconPeer || !peer || peer.destroyed) return;
+  lastClaimTry = now();
   const bid = beaconIdOf(room);
   const bp = beaconPeer = new Peer(bid, peerOpts());
   bp.on('open', () => {
@@ -745,7 +751,10 @@ function tryClaimBeacon(queryIfTaken) {
     if (e.type === 'unavailable-id') {
       beaconPeer = null; beaconOpen = false; setRole();
       try { bp.destroy(); } catch {}
-      if (queryIfTaken) queryBeacon();
+      // Someone we may not be connected to holds the beacon (e.g. the old holder reloaded and
+      // re-claimed it before learning about us): ask it, so separate groups merge into one mesh.
+      const holderKnown = [...members.values()].some(m => isOnline(m) && m.status && m.status.beacon);
+      if (queryIfTaken || !holderKnown) queryBeacon();
     }
   });
 }
@@ -822,7 +831,7 @@ function meshTick() {
   const online = [me.id, ...[...members].filter(([, m]) => isOnline(m)).map(([id]) => id)];
   if ([...members.values()].some(m => isOnline(m) && m.status && m.status.beacon)) lastBeaconSeen = t;
   if (beaconOpen) lastBeaconSeen = t;
-  if (!beaconPeer && t - lastBeaconSeen > 8000 && online.sort()[0] === me.id) tryClaimBeacon(false);
+  if (!beaconPeer && t - lastBeaconSeen > 8000 && t - lastClaimTry > 5000 && online.sort()[0] === me.id) tryClaimBeacon(false);
   // isolated? ask the room again
   if (!beaconOpen && ![...links.values()].some(L => L.isOpen) && t - lastBeaconQuery > 10000) queryBeacon();
 }
@@ -890,7 +899,7 @@ async function updateLinkStats(L) {
 let burst = null;
 function runBurst(m) {
   const t = now();
-  burst = { bid: m.bid, n: m.n, start: t, endLocal: t + m.n * 5 + 200, startOps: ops.size, done: false, from: m.from };
+  burst = { bid: m.bid, n: m.n, start: t, writeMs: m.n * 5, endLocal: t + m.n * 5 + 200, startOps: ops.size, done: false, from: m.from };
   $('burstResult').textContent = `一斉書き込み中…（${m.fromName} が開始 / 各端末 ${m.n} 回）`;
   log(`一斉書き込みテスト開始（各端末 ${m.n} 回）`);
   let i = 0;
@@ -914,10 +923,11 @@ function checkBurst() {
   const enough = ops.size >= burst.startOps + burst.n * (online.length + 1);
   if (fresh && same && enough) {
     burst.done = true;
-    const sec = ((t - burst.start) / 1000).toFixed(1);
-    burst.result = { ok: true, sec: Number(sec), devices: online.length + 1, n: burst.n };
-    el.innerHTML = `<b class="ok">✅ ${online.length + 1} 台すべて一致</b> — 開始から ${sec} 秒で収束（操作 ${ops.size} 件, ハッシュ ${h}）`;
-    log(`一斉書き込みテスト: ${online.length + 1} 台で一致（${sec} 秒）`, 'ok');
+    // time from the end of this device's writes (writing itself takes n × 5 ms)
+    const sec = ((t - burst.start - burst.writeMs) / 1000).toFixed(1), wsec = (burst.writeMs / 1000).toFixed(1);
+    burst.result = { ok: true, sec: Number(sec), writeSec: Number(wsec), devices: online.length + 1, n: burst.n };
+    el.innerHTML = `<b class="ok">✅ ${online.length + 1} 台すべて一致</b> — 書き込み完了から ${sec} 秒で収束（書き込み ${wsec} 秒, 操作 ${ops.size} 件, ハッシュ ${h}）`;
+    log(`一斉書き込みテスト: ${online.length + 1} 台で一致（書き込み完了から ${sec} 秒）`, 'ok');
   } else if (t - burst.start > 60000) {
     burst.done = true;
     const bad = online.filter(([, m]) => !m.status || m.status.h !== h).map(([, m]) => m.name);
@@ -1528,7 +1538,7 @@ async function runAuto() {
       await waitFor(() => burst && burst.bid === bm.bid && burst.done, 65000, 250);
       const br = M.sync = (burst && burst.result) || { ok: false };
       stepEnd(st, br.ok ? (br.sec <= 5 ? 'pass' : 'warn') : 'fail',
-        br.ok ? `${br.devices} 台すべて一致（${br.sec} 秒で収束）` + (ms.ok < ms.pairs ? '。直接つながらない組も他の端末経由で同期' : '') : `60 秒以内に一致せず（${(br.bad || []).join(', ')}）`);
+        br.ok ? `${br.devices} 台すべて一致（書き込み完了から ${br.sec} 秒で収束）` + (ms.ok < ms.pairs ? '。直接つながらない組も他の端末経由で同期' : '') : `60 秒以内に一致せず（${(br.bad || []).join(', ')}）`);
 
       for (const cfg of prof.rt) {
         st = stepStart(`${cfg.title}・${cfg.dur} 秒`);
@@ -1628,7 +1638,7 @@ function deriveCaps(M) {
   if (peers >= 2 && ms) add('mesh', '3 台以上の同時接続', ms.ok === ms.pairs ? 'ok' : M.sync && M.sync.ok ? 'cond' : 'ng',
     ms.ok === ms.pairs ? `${peers + 1} 台が全員と直接接続` : M.sync && M.sync.ok ? `一部の組（${ms.failed.join(', ')}）は他の端末経由で同期` : '直接つながらない組があり同期も不完全');
   else add('mesh', '3 台以上の同時接続', 'na', `${peers + 1} 台でのテストのため未検証（3 台以上で再実行を）`);
-  if (M.sync) add('board', '共有ボード・チャット・ターン制ゲーム', M.sync.ok ? 'ok' : 'ng', M.sync.ok ? `同時書き込みが ${M.sync.sec} 秒で全員一致` : '同期が完了しない');
+  if (M.sync) add('board', '共有ボード・チャット・ターン制ゲーム', M.sync.ok ? 'ok' : 'ng', M.sync.ok ? `同時書き込みが完了から ${M.sync.sec} 秒で全員一致` : '同期が完了しない');
   else add('board', '共有ボード・チャット・ターン制ゲーム', 'na', '相手がいないため未検証');
   const rtCap = (key, title, res, strict) => {
     if (!res) return add(key, title, 'na', '相手がいないため未検証');
@@ -1758,7 +1768,8 @@ renderHist();
 // =====================================================================
 let lastDiag = '';
 function maskIps(t) {
-  return t.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[IP]')
+  // "Chrome/130.0.0.0" in a user agent looks like an IPv4 address: keep name/version tokens
+  return t.replace(/([A-Za-z]\/)?\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, (m, ver) => ver ? m : '[IP]')
     .replace(/\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){3,7}\b/gi, '[IP]'); // IPv6 (3+ colons, so clock times are kept)
 }
 function buildReport() {
@@ -1803,12 +1814,20 @@ $('reportBtn').onclick = async () => {
 // Room UI
 // =====================================================================
 const params = new URLSearchParams(location.search);
+const IS_FILE = location.protocol === 'file:';
+if (IS_FILE) $('shareBtn').textContent = 'ルーム名をコピー';
 $('room').value = params.get('room') || 'room-' + rand(6);
 $('joinBtn').onclick = () => { const r = $('room').value.trim(); if (r) { joinRoom(r); enableShared(true); } };
 $('leaveBtn').onclick = leaveRoom;
 $('room').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) $('joinBtn').click(); });
 $('shareBtn').onclick = async () => {
-  const url = location.origin + location.pathname + '?room=' + encodeURIComponent($('room').value.trim());
+  const name = $('room').value.trim();
+  if (IS_FILE) { // a file:// URL only exists on this device, so share the room name instead
+    try { await navigator.clipboard.writeText(name); log('ルーム名をコピーしました: ' + name + '（相手はファイルを開いてこのルーム名で「参加」）', 'ok'); }
+    catch { log('コピーに失敗しました。このルーム名を共有してください: ' + name, 'warn'); }
+    return;
+  }
+  const url = location.origin + location.pathname + '?room=' + encodeURIComponent(name);
   try { await navigator.clipboard.writeText(url); log('招待 URL をコピーしました: ' + url, 'ok'); }
   catch { log('コピーに失敗しました。この URL を共有してください: ' + url, 'warn'); }
 };
