@@ -22,9 +22,8 @@
     定期的な state vector (`sv`) 交換で欠けを補う。ハッシュは操作 ID の XOR（順序非依存）。
   - 手動モード: SDP をコピー＆ペーストで交換。STUN (stun.l.google.com) のみ使用。
 - `.nojekyll` — GitHub Pages で Jekyll 処理を無効化。
-- Hugging Face Space: https://huggingface.co/spaces/Lfood/p2p-test （static SDK）。
-- `.github/workflows/deploy-hf-space.yml` — `main` 更新時に上記 Space へデプロイ（GitHub Secret `HF_TOKEN` 設定時のみ）。
-  トークンは GitHub Secret `HF_TOKEN` のみに置く（リポジトリやログに出さない）。
+- `TESTING.md` — 実機テストのチェックリストと記録表。
+- 「結果レポートをコピー」はテキストを生成する際に IP アドレスを `[IP]` に伏せる。レポートに新しい項目を足すときも IP を含めない。
 
 ## ローカル確認
 
