@@ -24,7 +24,11 @@
   - リアルタイム通信テスト: 各接続の RTCPeerConnection に negotiated な非信頼 DataChannel（id 100, ordered:false,
     maxRetransmits:0）を追加し、メインの信頼チャネルと比較。開始 (`rtstart`) と結果 (`rtres`) はフラッディングで全員に配る。
 - `.nojekyll` — GitHub Pages で Jekyll 処理を無効化。
-- `TESTING.md` — 実機テストのチェックリストと記録表。
+- 自動テスト（`runAuto`）: 端末単体の確認 → ルーム全員でのテストを順に実行し、`deriveCaps` で
+  「使える/条件付き/使えない/未検証」を判定。進捗 (`autostep`) と結果 (`autores`) はフラッディングで全員に配り、
+  各端末の localStorage（`p2pt.history`、最大 100 件）に保存。結果には IP を含めない（`maskIps` を通す）。
+  判定項目を足すときは `deriveCaps` と TESTING.md の「結果から決める」表を合わせて更新する。
+- `TESTING.md` — 実機テストの手順（自動テスト中心）と「何が作れるか」の判定表。
 - 「結果レポートをコピー」はテキストを生成する際に IP アドレスを `[IP]` に伏せる。レポートに新しい項目を足すときも IP を含めない。
 
 ## ローカル確認

@@ -62,6 +62,17 @@
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-size: 14px; }
   .kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
   .legend span { margin-right: 12px; }
+  h2.divider { margin: 28px 0 12px; font-size: 1.1rem; border-top: 1px solid var(--border); padding-top: 20px; }
+  .steps { list-style: none; padding: 0; margin: 8px 0; font-size: 14px; }
+  .steps li { padding: 5px 0; border-bottom: 1px dashed var(--border); display: grid; grid-template-columns: 1.6em 1fr; gap: 4px; }
+  .steps li small { display: block; color: var(--muted); }
+  .caps h3 { font-size: .95rem; margin: 14px 0 6px; }
+  .caps ul { list-style: none; padding: 0; margin: 0; }
+  .caps li { padding: 6px 10px; border-radius: 8px; margin-bottom: 4px; background: var(--sub); }
+  .caps li.ok { background: var(--ok-bg); } .caps li.cond { background: var(--warn-bg); } .caps li.ng { background: var(--ng-bg); }
+  .caps li b { color: var(--fg); } .caps li small { display: block; color: var(--muted); }
+  table.cmp td, table.cmp th { white-space: normal; min-width: 70px; }
+  table.cmp td:first-child { min-width: 180px; }
 </style>
 </head>
 <body>
@@ -85,6 +96,48 @@
     </dl>
     <p class="hint">全員が同じルーム名で参加すると、自動的に全員同士（フルメッシュ）で接続します。最初の接続情報の交換だけ PeerJS のシグナリングサーバーを使い、データは端末間で直接流れます。</p>
   </section>
+
+  <!-- ===== Auto test ===== -->
+  <section>
+    <h2>自動テスト</h2>
+    <p class="hint">ボタン 1 つで、この端末単体の確認と、同じルームにいる全端末との通信テストを順番に行い、「何が使えるか」を判定します。
+      他の端末は同じルームに入っておくだけで OK（操作不要）。相手がいない場合は端末単体の項目だけ判定します。</p>
+    <label class="blk" for="autoLabel">テスト条件メモ（結果と一緒に保存されます）</label>
+    <input id="autoLabel" list="autoLabelList" placeholder="例: 社内LAN 3F / PC⇄スマホ(モバイル回線)" style="width:100%">
+    <datalist id="autoLabelList">
+      <option value="社内LAN（同じフロア）"><option value="社内LAN（別フロア・別拠点）"><option value="社内PC ⇄ スマホ（モバイル回線）">
+      <option value="社内PC ⇄ 自宅PC"><option value="社内 Wi-Fi ⇄ 有線LAN"><option value="VPN 経由"><option value="ゲスト Wi-Fi"><option value="自宅 Wi-Fi ⇄ スマホ（モバイル回線）">
+    </datalist>
+    <div class="row">
+      <select id="autoProfile"><option value="quick" selected>クイック（約 1 分）</option><option value="full">じっくり（約 3 分）</option></select>
+      <button class="primary" id="autoBtn">自動テストを開始</button>
+      <span class="hint" id="autoWho"></span>
+    </div>
+    <div id="autoStatus" class="hint"></div>
+    <ul class="steps" id="autoSteps"></ul>
+    <div class="caps" id="autoSummary"></div>
+    <div class="row hidden" id="autoSaveRow">
+      <button id="autoSaveMd">レポートを保存 (.md)</button>
+      <button id="autoSaveJson">データを保存 (.json)</button>
+      <span class="hint">結果はこの端末の「保存した結果」にも自動で残ります（参加者全員の端末にも共有）。</span>
+    </div>
+  </section>
+
+  <!-- ===== History ===== -->
+  <details class="card" id="histBox">
+    <summary>保存した結果（<span id="histCount">0</span> 件）・比較</summary>
+    <p class="hint">この端末に保存された自動テストの結果です（自分が実行したもの＋同じルームの人が実行して共有されたもの）。チェックを入れると下に比較表が出ます。</p>
+    <div class="scroll"><table id="histTable"></table></div>
+    <div class="row">
+      <button id="histExport">すべて書き出し (.json)</button>
+      <label class="hint"><input type="file" id="histImport" accept=".json,application/json" multiple style="max-width:240px"> 読み込み（他の人の結果をまとめる）</label>
+      <button id="histClear">すべて削除</button>
+    </div>
+    <div class="scroll"><table class="cmp" id="cmpTable"></table></div>
+    <div class="caps" id="histView"></div>
+  </details>
+
+  <h2 class="divider">プレイグラウンド（手動で試す）</h2>
 
   <!-- ===== Sync status ===== -->
   <section>
@@ -552,6 +605,25 @@ function handleMessage(L, m) {
       storeRtResult(m);
       break;
     }
+    case 'autostep': {
+      const key = 'as' + m.id + ':' + m.seq;
+      if (seenFlood.has(key)) return;
+      seenFlood.add(key);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      if (!auto || auto.id !== m.id) { remoteAuto = { by: m.by, text: m.text, at: now() }; renderRemoteAuto(); }
+      break;
+    }
+    case 'autores': {
+      const key = 'ar' + m.result.id;
+      if (seenFlood.has(key)) return;
+      seenFlood.add(key);
+      for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
+      remoteAuto = null; renderRemoteAuto();
+      saveResult(Object.assign({}, m.result, { received: true }));
+      showResult(m.result, $('autoSummary'));
+      $('autoStatus').textContent = `${m.result.by} が実行した自動テストの結果を受信・保存しました`;
+      break;
+    }
     case 'bye': L.close('bye'); break;
     case 'tp-start': L.rx = { id: m.id, bytes: m.bytes, got: 0, t0: 0 }; break;
     case 'tp-done': if (L.tp && L.tp.id === m.id) L.tp.resolve(m); break;
@@ -843,11 +915,13 @@ function checkBurst() {
   if (fresh && same && enough) {
     burst.done = true;
     const sec = ((t - burst.start) / 1000).toFixed(1);
+    burst.result = { ok: true, sec: Number(sec), devices: online.length + 1, n: burst.n };
     el.innerHTML = `<b class="ok">✅ ${online.length + 1} 台すべて一致</b> — 開始から ${sec} 秒で収束（操作 ${ops.size} 件, ハッシュ ${h}）`;
     log(`一斉書き込みテスト: ${online.length + 1} 台で一致（${sec} 秒）`, 'ok');
   } else if (t - burst.start > 60000) {
     burst.done = true;
     const bad = online.filter(([, m]) => !m.status || m.status.h !== h).map(([, m]) => m.name);
+    burst.result = { ok: false, bad, devices: online.length + 1, n: burst.n };
     el.innerHTML = `<b class="ng">⚠ 60 秒経っても不一致</b>: ${esc(bad.join(', '))}`;
     log('一斉書き込みテスト: 60 秒以内に収束せず', 'ng');
   }
@@ -1016,9 +1090,10 @@ setInterval(() => {
 }, 250);
 document.addEventListener('visibilitychange', () => log(document.hidden ? 'ページが非表示になりました（バックグラウンド）' : 'ページが再表示されました'));
 
-async function speedTest(L) {
-  if (!L.isOpen || L.tp) return;
-  const mb = Number($('tpSize').value), bytes = mb << 20, CH = 16384;
+async function speedTest(L, mbArg) {
+  if (!L.isOpen || L.tp) return null;
+  const mb = mbArg || Number($('tpSize').value), bytes = mb << 20, CH = 16384;
+  let result = null;
   const id = rand(6);
   const dc = L.dc;
   L.tpResult = '計測中…'; scheduleRender();
@@ -1042,25 +1117,28 @@ async function speedTest(L) {
     const ms = now() - t0;
     const mbps = (bytes * 8 / (ms / 1000) / 1e6);
     L.tpResult = `${mbps.toFixed(1)} Mbps`;
+    result = mbps;
     log(`速度テスト (${L.name}): ${mb} MB を ${(ms / 1000).toFixed(2)} 秒 → ${mbps.toFixed(1)} Mbps（受信側計測 ${(res.bytes * 8 / (res.ms / 1000) / 1e6).toFixed(1)} Mbps）`, 'ok');
   } catch (e) {
     L.tpResult = '失敗';
     log(`速度テスト失敗 (${L.name}): ${e.message}`, 'ng');
   } finally { L.tp = null; scheduleRender(); }
+  return result;
 }
 
 // =====================================================================
 // Diagnostics
 // =====================================================================
-$('diagBtn').onclick = async () => {
-  const out = $('diagOut');
-  out.innerHTML = '<dt>状態</dt><dd>候補を収集中…（最大 8 秒）</dd>';
-  const servers = [...DEFAULT_ICE, ...CFG.ice.filter(s => !JSON.stringify(s).includes('stun.l.google') && !JSON.stringify(s).includes('stun1.l.google'))];
+// Gathers ICE candidates with the configured servers. Returned object has no IP addresses
+// except `addrs`, which is only shown on this screen.
+async function runDiag() {
+  const servers = CFG.ice;
+  const stunCount = servers.reduce((n, s) => n + [].concat(s.urls).filter(u => /^stuns?:/.test(u)).length, 0);
+  const hasTurn = servers.some(s => [].concat(s.urls).some(u => /^turns?:/.test(u)));
   const pc = new RTCPeerConnection({ iceServers: servers });
-  const cands = [];
+  const cands = [], errors = [];
   pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate); };
-  const errors = [];
-  pc.onicecandidateerror = e => errors.push(`${e.url || ''} ${e.errorCode} ${e.errorText || ''}`);
+  pc.onicecandidateerror = e => errors.push(`${e.url || ''} ${e.errorCode} ${e.errorText || ''}`.trim());
   pc.createDataChannel('diag');
   const t0 = now();
   await pc.setLocalDescription(await pc.createOffer());
@@ -1077,23 +1155,31 @@ $('diagBtn').onclick = async () => {
   // NAT type hint: same local socket mapped to different public ports by different STUN servers => symmetric
   const byBase = new Map();
   for (const c of srflx) { const k = relPort(c); if (!byBase.has(k)) byBase.set(k, new Set()); byBase.get(k).add(addrOf(c) + ':' + portOf(c)); }
-  const symmetric = [...byBase.values()].some(s => s.size > 1);
-  let nat;
-  if (!srflx.length) nat = '<span class="ng">STUN 応答なし（UDP がブロックされている可能性。TURN 必須）</span>';
-  else if (symmetric) nat = '<span class="warn">対称型 NAT の可能性が高い（相手も同様なら直接接続は困難 → TURN 推奨）</span>';
-  else nat = '<span class="ok">Cone 型 NAT（直接接続できる可能性が高い）</span>';
-  const v6 = srflx.some(c => addrOf(c).includes(':'));
-  const hasTurn = CFG.ice.some(s => [].concat(s.urls).some(u => /^turns?:/.test(u)));
+  const symmetric = [...byBase.values()].some(x => x.size > 1);
+  return { ms: Math.round(ms), stunCount, hasTurn, host: host.length, srflx: srflx.length, relay: relay.length, symmetric,
+    natKnown: stunCount >= 2, v6: srflx.some(c => addrOf(c).includes(':')), errors: errors.slice(0, 5).map(maskIps),
+    addrs: [...new Set(srflx.map(c => addrOf(c) + ':' + portOf(c)))] };
+}
+function natText(d) {
+  if (!d.stunCount) return 'STUN 未設定（同じネットワーク内のみ）';
+  if (!d.srflx) return 'STUN 応答なし（UDP が塞がれている可能性）';
+  if (d.symmetric) return '対称型 NAT の可能性（相手次第で直接接続が困難）';
+  return d.natKnown ? 'Cone 型 NAT（直接接続できる可能性が高い）' : 'STUN 応答あり（NAT 種別は STUN 2 台以上で判定）';
+}
+$('diagBtn').onclick = async () => {
+  const out = $('diagOut');
+  out.innerHTML = '<dt>状態</dt><dd>候補を収集中…（最大 8 秒）</dd>';
+  const d = await runDiag();
+  const cls = !d.stunCount ? '' : !d.srflx ? 'ng' : d.symmetric ? 'warn' : 'ok';
   out.innerHTML = `
-    <dt>収集時間</dt><dd>${(ms / 1000).toFixed(1)} 秒</dd>
-    <dt>host 候補</dt><dd>${host.length} 件</dd>
-    <dt>srflx 候補</dt><dd>${srflx.length} 件 ${esc([...new Set(srflx.map(c => addrOf(c) + ':' + portOf(c)))].join(', '))}</dd>
-    <dt>NAT 判定</dt><dd>${nat}</dd>
-    <dt>IPv6 グローバル</dt><dd>${v6 ? 'あり' : 'なし'}</dd>
-    <dt>TURN</dt><dd>${!hasTurn ? '未設定' : relay.length ? `<span class="ok">OK（relay 候補 ${relay.length} 件）</span>` : '<span class="ng">relay 候補なし（URL・認証情報を確認）</span>'}</dd>
-    ${errors.length ? `<dt>エラー</dt><dd class="warn">${esc(errors.slice(0, 5).join(' / '))}</dd>` : ''}`;
-  const natPlain = !srflx.length ? 'STUN応答なし(UDPブロックの可能性)' : symmetric ? '対称型NATの可能性' : 'Cone型NAT';
-  lastDiag = `NAT=${natPlain} / host候補=${host.length} / srflx候補=${srflx.length} / IPv6=${v6 ? 'あり' : 'なし'} / TURN=${!hasTurn ? '未設定' : relay.length ? 'OK' : 'relay候補なし'} / 収集${(ms / 1000).toFixed(1)}秒` + (errors.length ? ` / エラー: ${errors.slice(0, 3).join(' ; ')}` : '');
+    <dt>収集時間</dt><dd>${(d.ms / 1000).toFixed(1)} 秒</dd>
+    <dt>host 候補</dt><dd>${d.host} 件</dd>
+    <dt>srflx 候補</dt><dd>${d.srflx} 件 ${esc(d.addrs.join(', '))}</dd>
+    <dt>NAT 判定</dt><dd class="${cls}">${esc(natText(d))}</dd>
+    <dt>IPv6 グローバル</dt><dd>${d.v6 ? 'あり' : 'なし'}</dd>
+    <dt>TURN</dt><dd>${!d.hasTurn ? '未設定' : d.relay ? `<span class="ok">OK（relay 候補 ${d.relay} 件）</span>` : '<span class="ng">relay 候補なし（URL・認証情報を確認）</span>'}</dd>
+    ${d.errors.length ? `<dt>エラー</dt><dd class="warn">${esc(d.errors.join(' / '))}</dd>` : ''}`;
+  lastDiag = `NAT=${natText(d)} / host候補=${d.host} / srflx候補=${d.srflx} / IPv6=${d.v6 ? 'あり' : 'なし'} / TURN=${!d.hasTurn ? '未設定' : d.relay ? 'OK' : 'relay候補なし'} / 収集${(d.ms / 1000).toFixed(1)}秒` + (d.errors.length ? ` / エラー: ${d.errors.join(' ; ')}` : '');
   log('ネットワーク診断: ' + lastDiag);
 };
 
@@ -1264,6 +1350,408 @@ $('links').addEventListener('click', e => {
   if (cut && links.get(cut)) { log(`切断テスト: ${links.get(cut).name} との接続を切ります（自動再接続を確認）`); links.get(cut).close('切断テスト'); }
 });
 setInterval(scheduleRender, 1000);
+
+// =====================================================================
+// Auto test: runs every check in order and judges what is usable
+// =====================================================================
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitFor(fn, timeout, step = 200) {
+  const t0 = now();
+  for (;;) { const v = fn(); if (v || now() - t0 >= timeout) return v; await sleep(step); }
+}
+const PROFILES = {
+  quick: { name: 'クイック', mb: 2, burst: 200, reconnect: 1,
+    rt: [{ key: 'rt30', title: 'リアルタイム 30回/秒（協力・早押し想定）', rate: 30, size: 256, dur: 10 },
+         { key: 'rt60', title: 'リアルタイム 60回/秒（アクション想定）', rate: 60, size: 64, dur: 8 },
+         { key: 'rt1k', title: '大きめデータ 1KB × 20回/秒', rate: 20, size: 1024, dur: 8 }] },
+  full: { name: 'じっくり', mb: 8, burst: 1000, reconnect: 2,
+    rt: [{ key: 'rt30', title: 'リアルタイム 30回/秒（協力・早押し想定）', rate: 30, size: 256, dur: 30 },
+         { key: 'rt60', title: 'リアルタイム 60回/秒（アクション想定）', rate: 60, size: 64, dur: 20 },
+         { key: 'rt1k', title: '大きめデータ 1KB × 20回/秒', rate: 20, size: 1024, dur: 20 }] },
+};
+let auto = null, remoteAuto = null;
+const ICON = { run: '⏳', pass: '✅', warn: '⚠️', fail: '❌', skip: '⏭️' };
+
+// Two RTCPeerConnections inside this page: proves WebRTC works here (and, with relay policy, that TURN works).
+async function loopback({ iceServers, policy, timeout }) {
+  const cfg = { iceServers, iceTransportPolicy: policy || 'all' };
+  const a = new RTCPeerConnection(cfg), b = new RTCPeerConnection(cfg);
+  a.onicecandidate = e => { if (e.candidate) b.addIceCandidate(e.candidate).catch(() => {}); };
+  b.onicecandidate = e => { if (e.candidate) a.addIceCandidate(e.candidate).catch(() => {}); };
+  b.ondatachannel = e => { e.channel.onmessage = m => e.channel.send(m.data); };
+  const dc = a.createDataChannel('lb');
+  const t0 = now();
+  const ok = new Promise(res => { dc.onopen = () => dc.send('ping'); dc.onmessage = () => res(true); });
+  try {
+    await a.setLocalDescription(await a.createOffer()); await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription(await b.createAnswer()); await a.setRemoteDescription(b.localDescription);
+    const r = await Promise.race([ok, sleep(timeout).then(() => false)]);
+    return { ok: r, ms: Math.round(now() - t0) };
+  } catch (e) { return { ok: false, err: e.message }; }
+  finally { a.close(); b.close(); }
+}
+function myLinksView() {
+  const ls = {};
+  for (const [id, L] of links) ls[id] = { r: L.isOpen ? L.route : 'c', rtt: L.rtt };
+  for (const [id, a] of attempts) if (!ls[id]) ls[id] = { r: 'x', n: a.n };
+  return ls;
+}
+const onlineOthers = () => [...members.entries()].filter(([, m]) => isOnline(m));
+// Classify every pair of devices in the room using each side's reported links.
+function meshSummary() {
+  const nodes = [[me.id, me.name, myLinksView()], ...onlineOthers().map(([id, m]) => [id, m.name, m.status && m.status.links])];
+  const out = { pairs: 0, ok: 0, H: 0, S: 0, R: 0, fail: 0, pending: 0, failed: [] };
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+    const [ia, na, la] = nodes[i], [ib, nb, lb] = nodes[j];
+    const v = [la && la[ib], lb && lb[ia]].filter(Boolean).map(x => x.r);
+    out.pairs++;
+    const route = v.find(r => r === 'H' || r === 'S' || r === 'R');
+    if (route) { out.ok++; out[route]++; }
+    else if (v.includes('-') || v.includes('c') || !v.length) { out.pending++; out.failed.push(`${na}⇄${nb}`); }
+    else { out.fail++; out.failed.push(`${na}⇄${nb}`); }
+  }
+  return out;
+}
+async function runRtAndCollect(cfg) {
+  const id = rand(8), expected = 1 + onlineOthers().length;
+  const m = { t: 'rtstart', id, rate: cfg.rate, size: cfg.size, dur: cfg.dur, fromName: me.name };
+  seenFlood.add('rs' + id);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+  startRt(m);
+  await waitFor(() => rtResults.get(id) && rtResults.get(id).size >= expected, cfg.dur * 1000 + 12000, 300);
+  const res = rtResults.get(id) || new Map();
+  const agg = k => {
+    const rows = [...res.values()].flatMap(x => x.rows.filter(r => r.k === k && !r.na && r.got));
+    if (!rows.length) return null;
+    const mx = f => Math.max(...rows.map(r => r[f] || 0));
+    return { p50: mx('p50'), p95: mx('p95'), p99: mx('p99'), max: mx('max'), loss: mx('loss'), jit: mx('jit'),
+      stalls: rows.reduce((n, r) => n + (r.stalls || 0), 0), maxGap: mx('maxGap'), pairs: rows.length };
+  };
+  const fastNA = [...res.values()].some(x => x.rows.some(r => r.k === 'u' && r.na));
+  const offs = [...res.values()].flatMap(x => x.rows.filter(r => r.k === 'r' && r.off != null).map(r => Math.abs(r.off)));
+  const tickGap = Math.max(0, ...[...res.values()].map(x => x.tickGap || 0));
+  return { devices: res.size, expected, u: agg('u'), r: agg('r'), fastNA, off: offs.length ? Math.max(...offs) : null, tickGap,
+    missing: onlineOthers().filter(([pid]) => !res.has(pid)).map(([, mm]) => mm.name) };
+}
+function rtVerdictOf(res) {
+  const base = res.u && !res.fastNA ? res.u : res.r;
+  return base ? verdict(base) : '-';
+}
+const vStatus = v => v.startsWith('◎') || v.startsWith('○') ? 'pass' : v.startsWith('△') ? 'warn' : 'fail';
+
+function stepStart(title) {
+  const st = { title, status: 'run', detail: '' };
+  auto.steps.push(st);
+  renderSteps();
+  auto.seq++;
+  const m = { t: 'autostep', id: auto.id, seq: auto.seq, by: me.name, text: title };
+  seenFlood.add('as' + auto.id + ':' + auto.seq);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+  return st;
+}
+function stepEnd(st, status, detail) { st.status = status; st.detail = detail; renderSteps(); }
+function renderSteps() {
+  $('autoSteps').innerHTML = auto.steps.map(st => `<li><span>${ICON[st.status]}</span><span>${esc(st.title)}${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</span></li>`).join('');
+}
+function renderRemoteAuto() {
+  const busy = remoteAuto && now() - remoteAuto.at < 40000;
+  $('autoWho').textContent = busy ? `${remoteAuto.by} が自動テスト実行中: ${remoteAuto.text}` : '';
+  $('autoBtn').disabled = !!busy || !!(auto && auto.running);
+}
+setInterval(renderRemoteAuto, 2000);
+
+async function runAuto() {
+  const prof = PROFILES[$('autoProfile').value];
+  auto = { id: rand(10), running: true, steps: [], seq: 0, start: Date.now() };
+  const M = { profile: $('autoProfile').value };
+  $('autoBtn').disabled = true;
+  $('autoSummary').innerHTML = ''; $('autoSaveRow').classList.add('hidden');
+  $('autoStatus').textContent = `自動テスト実行中（${prof.name}）… 他の端末は操作せずそのままお待ちください`;
+  log(`自動テスト開始（${prof.name}）`);
+  let st;
+  try {
+    // ---- device only ----
+    st = stepStart('ブラウザの対応状況');
+    let storage = false; try { localStorage.setItem('p2pt.t', '1'); localStorage.removeItem('p2pt.t'); storage = true; } catch {}
+    M.browser = { rtc: typeof RTCPeerConnection === 'function', storage, secure: !!window.isSecureContext, page: location.protocol === 'file:' ? 'file' : 'web' };
+    stepEnd(st, !M.browser.rtc ? 'fail' : storage ? 'pass' : 'warn',
+      `WebRTC ${M.browser.rtc ? '○' : '×'} / 結果の保存 ${storage ? '○' : '×（このブラウザでは保存不可）'} / 開き方: ${M.browser.page === 'file' ? 'ローカルファイル' : 'Web'}`);
+    if (!M.browser.rtc) throw new Error('WebRTC 非対応');
+
+    st = stepStart('WebRTC 単体動作（ネットワーク不要）');
+    M.loopback = await loopback({ iceServers: [], timeout: 8000 });
+    stepEnd(st, M.loopback.ok ? 'pass' : 'fail', M.loopback.ok ? `端末内で接続・送受信 OK（${M.loopback.ms}ms）` : 'この端末内でも接続できません（ブラウザ設定・拡張機能・ポリシーで WebRTC が制限されている可能性）');
+
+    st = stepStart('シグナリング（ルームへの自動接続）');
+    const sigHost = CFG.server ? CFG.server.host : '0.peerjs.com';
+    if (typeof Peer === 'undefined') { M.signal = { ok: false, host: sigHost, why: 'nolib' }; stepEnd(st, 'fail', 'PeerJS を読み込めていません'); }
+    else {
+      if (!room) { joinRoom($('room').value.trim() || 'room-' + rand(6)); enableShared(true); }
+      const t0 = now();
+      const ok = await waitFor(() => peer && peer.open, 15000);
+      M.signal = { ok: !!ok, host: sigHost, ms: ok ? Math.round(now() - t0) : null };
+      stepEnd(st, ok ? 'pass' : 'fail', ok ? `${sigHost} に接続済み（ルーム: ${room}）` : `${sigHost} に 15 秒以内に接続できません（通信が塞がれている可能性。手動接続は使えます）`);
+    }
+
+    st = stepStart('STUN（別ネットワークと直接つなぐ準備・UDP）');
+    const d = await runDiag();
+    M.diag = Object.assign({}, d); delete M.diag.addrs;
+    stepEnd(st, !d.stunCount ? 'skip' : !d.srflx ? 'fail' : d.symmetric ? 'warn' : 'pass', natText(d) + `（host ${d.host} / srflx ${d.srflx}${d.v6 ? ' / IPv6 あり' : ''}）`);
+
+    st = stepStart('TURN 中継（直接つながらない時の保険）');
+    if (!d.hasTurn) { M.turn = null; stepEnd(st, 'skip', '未設定（「設定」で TURN サーバーを入れると判定します）'); }
+    else {
+      M.turn = await loopback({ iceServers: CFG.ice, policy: 'relay', timeout: 12000 });
+      stepEnd(st, M.turn.ok ? 'pass' : 'fail', M.turn.ok ? `TURN 経由で送受信 OK（${M.turn.ms}ms）` : 'TURN 経由で接続できません（URL・認証情報・ポートを確認）');
+    }
+
+    // ---- with peers ----
+    st = stepStart('参加者の確認');
+    if (M.signal && M.signal.ok) await waitFor(() => onlineOthers().length > 0, 6000);
+    M.participants = [me.name, ...onlineOthers().map(([, m]) => m.name)];
+    const n = M.participants.length - 1;
+    if (!n) stepEnd(st, 'skip', '他の端末がいません → 端末単体の項目のみ判定（同じルームに他の端末を入れて再実行すると全項目を判定します）');
+    else stepEnd(st, 'pass', `${n + 1} 台: ${M.participants.join(', ')}`);
+
+    if (n) {
+      st = stepStart('直接接続（全組み合わせ）');
+      await waitFor(() => meshSummary().pending === 0, 20000, 500);
+      const ms = M.mesh = meshSummary();
+      stepEnd(st, ms.ok === ms.pairs ? 'pass' : ms.ok ? 'warn' : 'fail',
+        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / NAT越え ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : ''));
+
+      st = stepStart(`共有データの同期（全員が同時に ${prof.burst} 回書き込み）`);
+      const bm = { t: 'burst', bid: rand(8), n: prof.burst, from: me.id, fromName: me.name };
+      seenBurst.add(bm.bid);
+      for (const L of links.values()) if (L.isOpen) L.send(bm);
+      runBurst(bm);
+      await waitFor(() => burst && burst.bid === bm.bid && burst.done, 65000, 250);
+      const br = M.sync = (burst && burst.result) || { ok: false };
+      stepEnd(st, br.ok ? (br.sec <= 5 ? 'pass' : 'warn') : 'fail',
+        br.ok ? `${br.devices} 台すべて一致（${br.sec} 秒で収束）` + (ms.ok < ms.pairs ? '。直接つながらない組も他の端末経由で同期' : '') : `60 秒以内に一致せず（${(br.bad || []).join(', ')}）`);
+
+      for (const cfg of prof.rt) {
+        st = stepStart(`${cfg.title}・${cfg.dur} 秒`);
+        const r = M[cfg.key] = await runRtAndCollect(cfg);
+        const base = r.u && !r.fastNA ? r.u : r.r;
+        const v = rtVerdictOf(r);
+        let detail = base ? `${v}｜最悪の組: p95 ${f0(base.p95)}ms / p99 ${f0(base.p99)}ms / ロス ${base.loss.toFixed(1)}% / 途切れ ${base.stalls} 回` : '結果なし';
+        if (r.fastNA) detail += '｜高速モード使用不可（確実モードで判定）';
+        if (r.u && r.r && r.r.p99 > r.u.p99 * 2 + 20) detail += `｜確実モードは再送待ちで p99 ${f0(r.r.p99)}ms`;
+        if (r.missing.length) detail += `｜結果なし: ${r.missing.join(', ')}`;
+        if (r.tickGap > 3 * 1000 / cfg.rate + 30) detail += `｜送信が最大 ${r.tickGap}ms 遅れた端末あり`;
+        stepEnd(st, base ? (r.missing.length ? 'warn' : vStatus(v)) : 'fail', detail);
+      }
+
+      st = stepStart(`データ転送速度（${prof.mb} MB を各相手へ）`);
+      const sp = M.speed = [];
+      for (const L of [...links.values()].filter(L => L.isOpen)) sp.push({ to: L.name, mbps: await speedTest(L, prof.mb) });
+      const mins = sp.map(x => x.mbps || 0);
+      const minMbps = mins.length ? Math.min(...mins) : null;
+      stepEnd(st, minMbps == null ? 'skip' : minMbps >= 5 ? 'pass' : minMbps >= 1 ? 'warn' : 'fail',
+        sp.length ? sp.map(x => `${x.to}: ${x.mbps ? x.mbps.toFixed(1) + ' Mbps' : '失敗'}`).join(' / ') : '直接接続なし');
+
+      st = stepStart('切断からの自動復帰');
+      const target = [...links.values()].find(L => L.isOpen && L.kind === 'peerjs');
+      if (!target) { M.reconnect = null; stepEnd(st, 'skip', 'PeerJS の接続がないため未実施（手動接続は自動復帰しません）'); }
+      else {
+        const pid = target.peerId, name = target.name, times = [];
+        for (let i = 0; i < prof.reconnect; i++) {
+          const L = links.get(pid);
+          if (!L || !L.isOpen) break;
+          const t0 = now();
+          L.close('自動テスト（意図的な切断）');
+          const ok = await waitFor(() => { const x = links.get(pid); return x && x.isOpen; }, 20000, 100);
+          times.push(ok ? Math.round(now() - t0) : null);
+          await sleep(1500);
+        }
+        M.reconnect = { to: name, times };
+        const allOk = times.length && times.every(t => t != null);
+        const worst = allOk ? Math.max(...times) : null;
+        stepEnd(st, !allOk ? 'fail' : worst <= 5000 ? 'pass' : 'warn',
+          `${name} との接続を ${times.length} 回切断 → ` + times.map(t => t == null ? '復帰せず' : (t / 1000).toFixed(1) + ' 秒').join(', '));
+      }
+
+      st = stepStart('端末間の時計のずれ');
+      const off = M.rt30 && M.rt30.off;
+      M.clock = off;
+      stepEnd(st, off == null ? 'skip' : off < 20 ? 'pass' : 'warn', off == null ? '計測できず' : `最大 ${f0(off)}ms` + (off < 20 ? '（そのまま使える）' : '（ゲームでは時計の補正が必要）'));
+    }
+  } catch (e) {
+    if (st && st.status === 'run') stepEnd(st, 'fail', 'エラー: ' + e.message);
+    log('自動テスト中断: ' + e.message, 'ng');
+  }
+  const result = {
+    v: 1, id: auto.id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: M.profile, by: me.name,
+    device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
+    room, participants: M.participants || [me.name],
+    steps: auto.steps.map(x => ({ title: x.title, status: x.status, detail: maskIps(x.detail) })),
+    caps: deriveCaps(M), metrics: JSON.parse(maskIps(JSON.stringify(M))),
+  };
+  auto.running = false;
+  saveResult(result);
+  seenFlood.add('ar' + result.id);
+  for (const L of links.values()) if (L.isOpen) L.send({ t: 'autores', result });
+  showResult(result, $('autoSummary'));
+  lastResult = result;
+  $('autoSaveRow').classList.remove('hidden');
+  $('autoStatus').textContent = `完了（${((Date.now() - auto.start) / 1000).toFixed(0)} 秒）。結果を保存し、参加者にも共有しました`;
+  log('自動テスト完了', 'ok');
+  renderRemoteAuto();
+}
+$('autoBtn').onclick = () => { if (!(auto && auto.running)) runAuto(); };
+
+// ---- judge: what can be used ----
+function deriveCaps(M) {
+  const C = [];
+  const add = (key, title, status, reason) => C.push({ key, title, status, reason });
+  const peers = (M.participants || []).length - 1;
+  const lb = M.loopback && M.loopback.ok;
+  add('webrtc', 'P2P 通信（この端末のブラウザ）', M.browser && !M.browser.rtc ? 'ng' : lb ? 'ok' : M.loopback ? 'ng' : 'na',
+    lb ? 'ブラウザ内の接続テストに成功' : M.loopback ? 'ブラウザ/ポリシーで WebRTC が制限されている可能性' : '未実施');
+  if (M.signal) add('room', `ルームで自動接続（シグナリング: ${M.signal.host}）`, M.signal.ok ? 'ok' : 'ng',
+    M.signal.ok ? 'ルーム名を共有するだけで全員つながる' : '接続できない → 手動接続（コピペ）のみ。通信許可の申請先はこのホスト 1 つ');
+  else add('room', 'ルームで自動接続（シグナリング）', 'na', '未実施');
+  const manualOpen = [...links.values()].some(L => L.kind === 'manual' && L.isOpen);
+  add('manual', 'サーバーなし接続（手動コピペ）', manualOpen ? 'ok' : lb ? 'cond' : 'ng',
+    manualOpen ? '手動接続で通信できている' : lb ? '同じネットワーク内なら使える見込み（2 台ずつ・文字列のやり取りが必要）' : 'WebRTC が動かない');
+  const ms = M.mesh;
+  add('lan', '同じネットワーク内の端末と直接接続', ms && ms.H ? 'ok' : 'na', ms && ms.H ? `同一LAN の組 ${ms.H} 組で直接接続` : '同じネットワーク内の相手とは未検証');
+  const d = M.diag;
+  if (ms && ms.S) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ok', `NAT 越えの組 ${ms.S} 組で直接接続`);
+  else if (d && d.stunCount && !d.srflx) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN（UDP）が通らない → TURN 中継が必要');
+  else if (d && !d.stunCount) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN 未設定のため不可');
+  else add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', d && d.symmetric ? 'cond' : 'na',
+    d && d.symmetric ? '対称型 NAT のため相手次第。別ネットワークの端末を入れて再テストを' : '別ネットワークの相手とは未検証（STUN は応答あり）');
+  if (M.turn) add('turn', 'TURN 中継（直接つながらない時の保険）', M.turn.ok ? 'ok' : 'ng', M.turn.ok ? 'TURN 経由の送受信に成功' : 'TURN 経由で接続できない');
+  else add('turn', 'TURN 中継（直接つながらない時の保険）', ms && ms.R ? 'ok' : 'na', ms && ms.R ? '中継経由の接続あり' : '未設定');
+  if (peers >= 2 && ms) add('mesh', '3 台以上の同時接続', ms.ok === ms.pairs ? 'ok' : M.sync && M.sync.ok ? 'cond' : 'ng',
+    ms.ok === ms.pairs ? `${peers + 1} 台が全員と直接接続` : M.sync && M.sync.ok ? `一部の組（${ms.failed.join(', ')}）は他の端末経由で同期` : '直接つながらない組があり同期も不完全');
+  else add('mesh', '3 台以上の同時接続', 'na', `${peers + 1} 台でのテストのため未検証（3 台以上で再実行を）`);
+  if (M.sync) add('board', '共有ボード・チャット・ターン制ゲーム', M.sync.ok ? 'ok' : 'ng', M.sync.ok ? `同時書き込みが ${M.sync.sec} 秒で全員一致` : '同期が完了しない');
+  else add('board', '共有ボード・チャット・ターン制ゲーム', 'na', '相手がいないため未検証');
+  const rtCap = (key, title, res, strict) => {
+    if (!res) return add(key, title, 'na', '相手がいないため未検証');
+    const v = rtVerdictOf(res);
+    const base = res.u && !res.fastNA ? res.u : res.r;
+    const ev = base ? `p95 ${f0(base.p95)}ms・ロス ${base.loss.toFixed(1)}%（最悪の組）` : '結果なし';
+    let status = vStatus(v) === 'pass' ? 'ok' : vStatus(v) === 'warn' ? 'cond' : 'ng';
+    if (strict && v.startsWith('○')) status = 'cond';
+    add(key, title, status, `${v}｜${ev}`);
+  };
+  rtCap('coop', 'リアルタイム協力・早押しクイズ（30 回/秒）', M.rt30, false);
+  rtCap('action', 'リアルタイム対戦アクション（60 回/秒）', M.rt60, true);
+  rtCap('bigdata', '大きめデータの高頻度同期（1KB × 20 回/秒）', M.rt1k, false);
+  const anyRt = M.rt30 || M.rt60 || M.rt1k;
+  add('fast', '高速モード（再送なし・最新値だけ送る）', !anyRt ? 'na' : [M.rt30, M.rt60, M.rt1k].some(r => r && r.fastNA) ? 'ng' : 'ok',
+    !anyRt ? '未検証' : [M.rt30, M.rt60, M.rt1k].some(r => r && r.fastNA) ? '使えない組がある → 確実モードのみで作る' : '全組で使用可');
+  if (M.speed && M.speed.length) {
+    const mn = Math.min(...M.speed.map(x => x.mbps || 0));
+    add('file', '画像・ファイルの共有', mn >= 5 ? 'ok' : mn >= 1 ? 'cond' : 'ng', `最低 ${mn.toFixed(1)} Mbps` + (mn >= 5 ? '' : mn >= 1 ? '（小さい画像なら可）' : ''));
+  } else add('file', '画像・ファイルの共有', 'na', '相手がいないため未検証');
+  if (M.reconnect) {
+    const t = M.reconnect.times, ok = t.length && t.every(x => x != null), w = ok ? Math.max(...t) : null;
+    add('recover', '切断からの自動復帰', !ok ? 'ng' : w <= 5000 ? 'ok' : 'cond', ok ? `最大 ${(w / 1000).toFixed(1)} 秒で復帰` : '復帰しなかった');
+  } else add('recover', '切断からの自動復帰', 'na', '未検証');
+  add('clock', '時刻合わせ（タイマー・どちらが先か判定）', M.clock == null ? 'na' : M.clock < 20 ? 'ok' : 'cond',
+    M.clock == null ? '未検証' : M.clock < 20 ? `時計のずれ最大 ${f0(M.clock)}ms` : `時計のずれ最大 ${f0(M.clock)}ms → ゲーム側で補正が必要`);
+  add('bg', 'スマホのバックグラウンド・画面オフ中の動作', 'na', '自動では判定できません。プレイグラウンドのリアルタイムテスト中にアプリを切り替えて確認');
+  add('av', '音声・ビデオ通話', 'na', 'このツールでは未検証（データ通信のみ）');
+  return C;
+}
+const CAP_GROUPS = [['ok', '✅ 使える'], ['cond', '⚠️ 条件付きで使える'], ['ng', '❌ 使えない'], ['na', '❔ 未検証']];
+function showResult(r, el) {
+  const d = new Date(r.ts);
+  let h = `<p class="hint">${esc(d.toLocaleString())} / 実行: ${esc(r.by)} / ${r.participants.length} 台（${esc(r.participants.join(', '))}）${r.label ? ' / 条件: ' + esc(r.label) : ''}</p>`;
+  for (const [st, title] of CAP_GROUPS) {
+    const items = r.caps.filter(c => c.status === st);
+    if (!items.length) continue;
+    h += `<h3>${title}（${items.length}）</h3><ul>` + items.map(c => `<li class="${st}"><b>${esc(c.title)}</b><small>${esc(c.reason)}</small></li>`).join('') + '</ul>';
+  }
+  el.innerHTML = h;
+}
+
+// ---- history / save ----
+let lastResult = null;
+const HKEY = 'p2pt.history';
+const loadHist = () => { const h = store.get(HKEY, []); return Array.isArray(h) ? h : []; };
+function saveResult(r) {
+  const h = loadHist().filter(x => x.id !== r.id);
+  h.push(r);
+  h.sort((a, b) => a.ts - b.ts);
+  store.set(HKEY, h.slice(-100));
+  renderHist();
+}
+const stamp = ts => { const d = new Date(ts), z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}`; };
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+function toMarkdown(r) {
+  const L = [`# P2P 自動テスト結果 ${new Date(r.ts).toLocaleString()}`, '',
+    `- 条件: ${r.label || '(未記入)'}`, `- 実行: ${r.by}（${r.device.page}）`, `- 参加: ${r.participants.length} 台（${r.participants.join(', ')}）`,
+    `- ルーム: ${r.room || '-'} / プロファイル: ${(PROFILES[r.profile] || {}).name || r.profile}`, ''];
+  for (const [st, title] of CAP_GROUPS) {
+    const items = r.caps.filter(c => c.status === st);
+    if (!items.length) continue;
+    L.push(`## ${title}`, '', ...items.map(c => `- **${c.title}** — ${c.reason}`), '');
+  }
+  L.push('## テスト手順と結果', '', ...r.steps.map(x => `- ${ICON[x.status]} ${x.title}${x.detail ? ' — ' + x.detail : ''}`), '');
+  L.push(`端末: ${r.device.ua}`);
+  return maskIps(L.join('\n'));
+}
+$('autoSaveMd').onclick = () => lastResult && download(`p2p-test-${stamp(lastResult.ts)}.md`, toMarkdown(lastResult), 'text/markdown');
+$('autoSaveJson').onclick = () => lastResult && download(`p2p-test-${stamp(lastResult.ts)}.json`, JSON.stringify(lastResult, null, 1), 'application/json');
+$('histExport').onclick = () => download(`p2p-test-history-${stamp(Date.now())}.json`, JSON.stringify(loadHist(), null, 1), 'application/json');
+$('histClear').onclick = () => { if (confirm('保存した結果をすべて削除しますか？')) { store.set(HKEY, []); renderHist(); $('cmpTable').innerHTML = ''; $('histView').innerHTML = ''; } };
+$('histImport').onchange = async e => {
+  let n = 0;
+  for (const f of e.target.files) {
+    try {
+      const data = JSON.parse(await f.text());
+      for (const r of [].concat(data)) if (r && r.id && Array.isArray(r.caps)) { saveResult(Object.assign({}, r, { imported: true })); n++; }
+    } catch { log(`読み込めませんでした: ${f.name}`, 'warn'); }
+  }
+  log(`${n} 件の結果を読み込みました`, n ? 'ok' : 'warn');
+  e.target.value = '';
+};
+const cmpSel = new Set();
+function renderHist() {
+  const h = loadHist().slice().reverse();
+  $('histCount').textContent = h.length;
+  const cnt = (r, st) => r.caps.filter(c => c.status === st).length;
+  $('histTable').innerHTML = !h.length ? '<tr><td class="hint">まだ結果はありません。上の「自動テストを開始」を実行してください</td></tr>' :
+    '<tr><th>比較</th><th>日時</th><th>条件</th><th>台数</th><th>実行</th><th>✅</th><th>⚠️</th><th>❌</th><th></th></tr>' +
+    h.map(r => `<tr><td><input type="checkbox" data-cmp="${esc(r.id)}" ${cmpSel.has(r.id) ? 'checked' : ''}></td><td>${esc(new Date(r.ts).toLocaleString())}</td>
+      <td>${esc(r.label || '-')}${r.received ? ' <span class="hint">(共有)</span>' : r.imported ? ' <span class="hint">(読込)</span>' : ''}</td>
+      <td>${r.participants.length}</td><td>${esc(r.by)}</td><td>${cnt(r, 'ok')}</td><td>${cnt(r, 'cond')}</td><td>${cnt(r, 'ng')}</td>
+      <td><button class="small" data-view="${esc(r.id)}">表示</button> <button class="small" data-md="${esc(r.id)}">.md</button> <button class="small" data-del="${esc(r.id)}">削除</button></td></tr>`).join('');
+  renderCmp();
+}
+function renderCmp() {
+  const runs = loadHist().filter(r => cmpSel.has(r.id)).slice(-8);
+  if (!runs.length) { $('cmpTable').innerHTML = ''; return; }
+  const keys = [];
+  for (const r of runs) for (const c of r.caps) if (!keys.some(k => k.key === c.key)) keys.push({ key: c.key, title: c.title });
+  const mark = { ok: '✅', cond: '⚠️', ng: '❌', na: '❔' };
+  $('cmpTable').innerHTML = '<tr><th>項目 ＼ 条件</th>' + runs.map(r => `<th>${esc(r.label || new Date(r.ts).toLocaleString())}<br><small class="hint">${r.participants.length}台</small></th>`).join('') + '</tr>' +
+    keys.map(k => '<tr><td>' + esc(k.title.replace(/（シグナリング: .*?）/, '（シグナリング）')) + '</td>' + runs.map(r => {
+      const c = r.caps.find(x => x.key === k.key);
+      return c ? `<td title="${esc(c.reason)}">${mark[c.status]}</td>` : '<td>-</td>';
+    }).join('') + '</tr>').join('');
+}
+$('histTable').addEventListener('click', e => {
+  const t = e.target, h = loadHist();
+  if (t.dataset.cmp) { t.checked ? cmpSel.add(t.dataset.cmp) : cmpSel.delete(t.dataset.cmp); renderCmp(); }
+  const find = id => h.find(r => r.id === id);
+  if (t.dataset.view && find(t.dataset.view)) showResult(find(t.dataset.view), $('histView'));
+  if (t.dataset.md && find(t.dataset.md)) { const r = find(t.dataset.md); download(`p2p-test-${stamp(r.ts)}.md`, toMarkdown(r), 'text/markdown'); }
+  if (t.dataset.del) { store.set(HKEY, h.filter(r => r.id !== t.dataset.del)); cmpSel.delete(t.dataset.del); renderHist(); }
+});
+renderHist();
 
 // =====================================================================
 // Result report (plain text, IP addresses masked)
