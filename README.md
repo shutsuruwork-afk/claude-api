@@ -4,7 +4,7 @@ Chat with claude
 > **このリポジトリは公開 (public) です。** 秘密情報や個人情報をコミットしないでください。
 >
 > 公開ページ: https://shutsuruwork-afk.github.io/claude-api/
-> （Hugging Face Space にも自動デプロイ可能: 下記「Hugging Face Space」参照）
+> Hugging Face Space: https://huggingface.co/spaces/Lfood/p2p-test
 
 ## P2P 接続テスト (GitHub Pages)
 
@@ -36,6 +36,8 @@ Chat with claude
 5. 接続中に Wi-Fi をオフ/オン → 自動再接続されるか
 
 ## Hugging Face Space
+
+公開中: https://huggingface.co/spaces/Lfood/p2p-test （ページ本体: https://lfood-p2p-test.static.hf.space/ ）
 
 `main` の `index.html` が更新されると、GitHub Actions（`.github/workflows/deploy-hf-space.yml`）が
 `https://huggingface.co/spaces/<HFユーザー名>/p2p-test` に自動デプロイします（Space は無ければ自動作成）。
