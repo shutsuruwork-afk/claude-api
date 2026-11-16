@@ -500,7 +500,9 @@ class Link {
     this.state = 'open'; this.openedAt = now();
     const dc = this.dc;
     if (dc) { dc.binaryType = 'arraybuffer'; dc.bufferedAmountLowThreshold = 1 << 20; }
-    this.send({ t: 'hello', id: me.id, name: me.name, color: me.color });
+    const hello = () => this.send({ t: 'hello', id: me.id, name: me.name, color: me.color });
+    hello();
+    setTimeout(() => { if (this.isOpen) hello(); }, 300); // the first message sent at open can get lost (see tryClaimBeacon)
     if (this.peerId) afterRegisteredOpen(this);
   }
   onData(d) {
@@ -833,11 +835,15 @@ function tryClaimBeacon(queryIfTaken) {
     sendStatus();
   });
   bp.on('connection', c => {
-    c.on('open', () => {
+    // Browsers occasionally drop a message that the answering side sends at the very moment the channel
+    // opens (seen in Chromium: the connection is fine, only that first message is lost). So the list is
+    // sent at open (for older copies of this page) and again whenever the joiner asks for it.
+    const sendList = () => {
       const list = [me.id, ...[...members].filter(([, m]) => isOnline(m)).map(([id]) => id)];
-      c.send(JSON.stringify({ t: 'members', list }));
-      setTimeout(() => c.close(), 3000);
-    });
+      try { c.send(JSON.stringify({ t: 'members', list })); } catch {}
+    };
+    c.on('open', () => { sendList(); setTimeout(() => c.close(), 3000); });
+    c.on('data', sendList);
   });
   bp.on('disconnected', () => setTimeout(() => { if (beaconPeer === bp && !bp.destroyed) try { bp.reconnect(); } catch {} }, 2000));
   bp.on('error', e => {
@@ -862,10 +868,17 @@ function queryBeacon() {
   lastBeaconQuery = now();
   const c = peer.connect(beaconIdOf(room), { serialization: 'raw', metadata: { from: me.id, q: 1 } });
   if (!c) return;
-  const timer = setTimeout(() => c.close(), 15000);
+  let answered = false;
+  // no answer (e.g. the list was lost, see tryClaimBeacon): ask again soon instead of waiting for the 10 s check
+  const timer = setTimeout(() => {
+    c.close();
+    if (!answered && room && !beaconOpen && ![...links.values()].some(L => L.isOpen)) queryBeacon();
+  }, 2500);
+  c.on('open', () => { try { c.send(JSON.stringify({ t: 'q' })); } catch {} });
   c.on('data', d => {
     let m; try { m = JSON.parse(d); } catch { return; }
-    if (m.t !== 'members') return;
+    if (m.t !== 'members' || answered) return;
+    answered = true;
     lastBeaconSeen = now();
     const others = (Array.isArray(m.list) ? m.list : []).filter(id => validId(id) && id !== me.id).slice(0, 64);
     log(`参加者一覧を取得: ${others.length} 人`);

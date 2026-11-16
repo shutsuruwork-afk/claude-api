@@ -99,6 +99,23 @@ test('2 台がほぼ同時に参加しても 3 台そろう', async () => {
   await waitSynced([A, B, C], 3, 12000);
 });
 
+test('窓口が開通直後に送った一覧・hello が失われても、すぐ参加できる', async () => {
+  // ブラウザは「チャネルが開いた瞬間に応答側が送った最初のメッセージ」をまれに落とす。それを確実に再現する
+  const room = newRoom();
+  const A = await open('A', { room });
+  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  await A.evaluate(() => {
+    const orig = RTCDataChannel.prototype.send, seen = new WeakSet();
+    RTCDataChannel.prototype.send = function (d) {
+      if (typeof d === 'string' && /"t":"(members|hello)"/.test(d) && !seen.has(this)) { seen.add(this); return; }
+      return orig.call(this, d);
+    };
+  });
+  const B = await open('B', { room });
+  await waitSynced([A, B], 2, 4000);
+  await B.waitForFunction(() => /接続成功: A/.test(document.querySelector('#log').textContent), null, { timeout: 3000 });
+});
+
 test('窓口の端末を再読み込みしても全員が合流する', async () => {
   const [A, B, C] = await group(3);
   await A.reload();
