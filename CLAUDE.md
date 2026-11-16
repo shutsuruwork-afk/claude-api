@@ -18,6 +18,8 @@
     定期的な state vector (`sv`) 交換で欠けを補う。ハッシュは操作 ID の XOR（順序非依存）。
   - 手動モード: SDP をコピー＆ペーストで交換。STUN (stun.l.google.com) のみ使用。
 - `.nojekyll` — GitHub Pages で Jekyll 処理を無効化。
+- `.github/workflows/deploy-hf-space.yml` — `main` 更新時に Hugging Face Space（static SDK, `<HFユーザー>/p2p-test`）へデプロイ。
+  トークンは GitHub Secret `HF_TOKEN` のみに置く（リポジトリやログに出さない）。
 
 ## ローカル確認
 

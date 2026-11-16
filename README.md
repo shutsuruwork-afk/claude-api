@@ -4,6 +4,7 @@ Chat with claude
 > **このリポジトリは公開 (public) です。** 秘密情報や個人情報をコミットしないでください。
 >
 > 公開ページ: https://shutsuruwork-afk.github.io/claude-api/
+> （Hugging Face Space にも自動デプロイ可能: 下記「Hugging Face Space」参照）
 
 ## P2P 接続テスト (GitHub Pages)
 
@@ -33,3 +34,16 @@ Chat with claude
 3. モバイル回線同士・会社/学校 Wi-Fi → `×` が出るか（出たら TURN が必要）
 4. 各構成で「一斉書き込みテスト」→ 全員一致するか
 5. 接続中に Wi-Fi をオフ/オン → 自動再接続されるか
+
+## Hugging Face Space
+
+`main` の `index.html` が更新されると、GitHub Actions（`.github/workflows/deploy-hf-space.yml`）が
+`https://huggingface.co/spaces/<HFユーザー名>/p2p-test` に自動デプロイします（Space は無ければ自動作成）。
+
+初回だけ設定が必要です:
+1. https://huggingface.co/settings/tokens で **Write** 権限のトークンを作成
+2. GitHub のリポジトリ Settings → Secrets and variables → Actions → New repository secret で
+   名前 `HF_TOKEN`、値にトークンを登録
+3. Actions タブ → 「Deploy to Hugging Face Space」→ 「Run workflow」で初回デプロイ
+
+`HF_TOKEN` が未設定の間はデプロイをスキップします（失敗にはなりません）。Space 名はワークフローの `SPACE_NAME` で変更できます。
