@@ -158,6 +158,22 @@ test('端末内テストが不成立でも、相手とつながっていれば�
   assert.deepStrictEqual(r, ['ok', 'ok', 'cond', 'ok', 'cond', 'ng', 'ng']);
 });
 
+test('同じネットワークかどうかは、双方の公開アドレスで決める', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => {
+    const c = (...addrs) => ({ pub: new Set(addrs) });
+    return [
+      sameSite(c('203.0.113.9', '2001:db8:1:2:aaaa::1'), c('203.0.113.9', '2001:db8:1:2:bbbb::9')), // 家の Wi-Fi: 同じ /64
+      sameSite(c('203.0.113.9'), c('203.0.113.9')),                                               // IPv4 だけで同じ出口
+      sameSite(c('203.0.113.9'), c('198.51.100.7')),                                              // 別の出口
+      sameSite(c('203.0.113.9', '2001:db8:1:2::1'), c('203.0.113.9', '2400:4000:5:6::1')),        // IPv4 は同じでも IPv6 が別（事業者の共用アドレス）
+      sameSite(c('203.0.113.9'), c()),                                                            // 片方に公開アドレスがない → 判定しない
+      sameSite(c('203.0.113.9', '2001:db8:1:2::1'), c('203.0.113.9')),                            // 片方だけ IPv6 → IPv4 で比べる
+    ];
+  });
+  assert.deepStrictEqual(r, [true, true, false, false, null, true]);
+});
+
 test('つながらない理由の切り分け', async () => {
   const p = await open('U');
   const r = await p.evaluate(() => {
@@ -338,6 +354,19 @@ test('「LAN 内の直接接続を助ける」でローカル IP が相手に伝
   await p.click('#diagBtn');
   await p.waitForFunction(() => /NAT 判定/.test(document.querySelector('#diagOut').textContent), null, { timeout: 15000 });
   assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(await p.textContent('#diagOut')), '診断画面に IP が出ている');
+});
+
+test('「LAN 内の直接接続を助ける」を使った端末が、相手の画面と結果に残る', async () => {
+  const [A, B] = await group(2);
+  await A.context().grantPermissions(['microphone']);
+  await A.click('#helpBox > summary'); await A.click('#lanBtn');
+  await A.waitForFunction(() => document.querySelector('#lanState').textContent !== '', null, { timeout: 10000 });
+  if (!/有効/.test(await A.textContent('#lanState'))) { console.log('  (このブラウザはマイク取得に非対応のため省略)'); return; }
+  await B.waitForFunction(() => [...members.values()].some(m => m.status && m.status.lan), null, { timeout: 10000 });
+  assert.match(await A.evaluate(() => buildReport()), /LAN 内の直接接続を助ける: 使用中/);
+  assert.match(await B.evaluate(() => buildReport()), /LAN 内の直接接続を助ける: 未使用/);
+  const reason = await B.evaluate(() => deriveCaps({ participants: ['B', 'A'], lanAssist: ['A'], mesh: { pairs: 1, ok: 1, H: 1, S: 0, R: 0, fail: 0, pending: 0, failed: [], why: [] } }).find(c => c.key === 'lan').reason);
+  assert.match(reason, /を使用: A/);
 });
 
 test('TURN: 経路別に確認し、中継のみでも同期する', async () => {
