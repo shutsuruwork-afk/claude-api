@@ -128,6 +128,36 @@ test('結果の検証と、バックグラウンド端末がある場合の判�
   assert.deepStrictEqual(r, [true, false, false, false, false, false, 'ok', 'cond']);
 });
 
+test('NAT の判定: IPv4 と IPv6 の両方があっても対称型と誤判定しない', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => [
+    natSymmetric([{ addr: '203.0.113.9', port: 60214, base: 0 }, { addr: '2001:db8::5', port: 51000, base: 0 }], 2), // 家の結果と同じ形
+    natSymmetric([{ addr: '203.0.113.9', port: 60214, base: 50000 }, { addr: '203.0.113.9', port: 60999, base: 50000 }], 1), // 同じソケットが別の対応 → 対称型
+    natSymmetric([{ addr: '203.0.113.9', port: 60214, base: 0 }, { addr: '203.0.113.9', port: 60999, base: 0 }], 1), // 隠れていてもソケットは 1 つ → 対称型
+    natSymmetric([{ addr: '203.0.113.9', port: 60214, base: 0 }, { addr: '203.0.113.9', port: 60999, base: 0 }], 2), // ソケットが 2 つありうる → 断定しない
+    natSymmetric([{ addr: '203.0.113.9', port: 60214, base: 50000 }], 1),
+  ]);
+  assert.deepStrictEqual(r, [false, true, true, false, false]);
+});
+
+test('端末内テストが不成立でも、相手とつながっていれば「WebRTC が使えない」としない', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => {
+    const st = (M, k) => deriveCaps(Object.assign({ participants: ['a'], browser: { rtc: true } }, M)).find(c => c.key === k).status;
+    const mesh = { pairs: 1, ok: 1, H: 0, S: 1, R: 0, fail: 0, pending: 0, failed: [], why: [] };
+    return [
+      st({ loopback: { ok: true, ms: 10 } }, 'webrtc'),
+      st({ loopback: { ok: false, hidden: true }, participants: ['a', 'b'], mesh }, 'webrtc'), // 家の結果と同じ形
+      st({ loopback: { ok: false, hidden: true }, participants: ['a', 'b'], mesh }, 'manual'),
+      st({ loopback: { ok: false, viaIce: true, hidden: true } }, 'webrtc'),
+      st({ loopback: { ok: false, hidden: true } }, 'webrtc'),
+      st({ loopback: { ok: false, hidden: false, host: 0 } }, 'webrtc'),
+      st({ loopback: { ok: false, hidden: false, host: 0 } }, 'manual'),
+    ];
+  });
+  assert.deepStrictEqual(r, ['ok', 'ok', 'cond', 'ok', 'cond', 'ng', 'ng']);
+});
+
 test('つながらない理由の切り分け', async () => {
   const p = await open('U');
   const r = await p.evaluate(() => {
@@ -479,6 +509,24 @@ test('直接通信が塞がれていると、自動テストは「相手は見�
   assert.ok(r.steps.some(x => x.status === 'fail' && /直接つながらない: /.test(x.detail)), info);
   assert.ok(r.steps.some(x => x.status === 'skip' && /省略/.test(x.detail)), info);
   assert.ok(r.build);
+});
+
+test('隠されたローカル IP を解決できない環境では、端末内テストを ❌ ではなく ⚠️ にする', async () => {
+  const p = await open('M');
+  // mDNS 名（隠されたローカル IP）の候補を捨てる = その名前を解決できないネットワークと同じ状態
+  await p.evaluate(() => {
+    const orig = RTCPeerConnection.prototype.addIceCandidate;
+    RTCPeerConnection.prototype.addIceCandidate = function (c) { return c && /\.local /.test(c.candidate || '') ? Promise.resolve() : orig.apply(this, arguments); };
+  });
+  await p.click('#autoBtn');
+  await p.waitForFunction(() => auto && !auto.running && lastResult, null, { timeout: 90000 });
+  const r = await p.evaluate(() => lastResult);
+  const step = r.steps.find(x => /WebRTC 単体動作/.test(x.title));
+  assert.strictEqual(step.status, 'warn', JSON.stringify(step));
+  assert.match(step.detail, /ローカル IP を隠して/);
+  assert.strictEqual(r.caps.find(c => c.key === 'webrtc').status, 'cond');
+  assert.strictEqual(r.caps.find(c => c.key === 'manual').status, 'cond');
+  assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(JSON.stringify(r.metrics.loopback)));
 });
 
 test('1 台テスト: 仮の相手と自動テストが完走し、ネットワーク項目は未検証のまま', async () => {

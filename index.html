@@ -344,7 +344,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17e';
+const BUILD = '2026-11-17f';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -1652,6 +1652,22 @@ async function speedTest(L, mbArg) {
 // =====================================================================
 // Gathers ICE candidates with the configured servers. The returned object has no IP addresses:
 // people photograph and share this screen, so addresses are not shown anywhere.
+// Symmetric NAT = one local socket shows up with different public mappings at different STUN servers.
+// Mappings are compared per address family (an IPv4 and an IPv6 mapping are different by nature). When the
+// browser hides the local socket (base port 0), several mappings only count if there cannot be several sockets.
+function natSymmetric(list, hostUdp) {
+  const fam = new Map();
+  for (const c of list) {
+    const f = String(c.addr).includes(':') ? 6 : 4;
+    if (!fam.has(f)) fam.set(f, new Map());
+    const k = c.base > 9 ? c.base : 0; // 0 / 9 = hidden
+    if (!fam.get(f).has(k)) fam.get(f).set(k, new Set());
+    fam.get(f).get(k).add(c.addr + ':' + c.port);
+  }
+  const socketsPerFamily = Math.max(1, hostUdp - (fam.size - 1));
+  for (const bases of fam.values()) for (const [k, set] of bases) if (set.size > (k ? 1 : socketsPerFamily)) return true;
+  return false;
+}
 async function runDiag() {
   const servers = CFG.ice;
   const stunCount = servers.reduce((n, s) => n + [].concat(s.urls).filter(u => /^stuns?:/.test(u)).length, 0);
@@ -1682,9 +1698,8 @@ async function runDiag() {
   const relay = cands.filter(c => typ(c) === 'relay');
   const host = cands.filter(c => typ(c) === 'host');
   // NAT type hint: same local socket mapped to different public ports by different STUN servers => symmetric
-  const byBase = new Map();
-  for (const c of srflx) { const k = relPort(c); if (!byBase.has(k)) byBase.set(k, new Set()); byBase.get(k).add(addrOf(c) + ':' + portOf(c)); }
-  const symmetric = [...byBase.values()].some(x => x.size > 1);
+  const hostUdp = host.filter(c => (c.protocol || '').toLowerCase() !== 'tcp').length;
+  const symmetric = natSymmetric(srflx.map(c => ({ addr: addrOf(c), port: portOf(c), base: relPort(c) })), hostUdp);
   return { ms: Math.round(ms), stunCount, hasTurn, host: host.length, srflx: srflx.length, relay: relay.length, symmetric,
     natKnown: stunCount >= 2, v6: srflx.some(c => addrOf(c).includes(':')), errors: errors.slice(0, 5).map(maskIps),
     hostHidden: host.length > 0 && host.every(c => /\.local$/i.test(addrOf(c) || '')) };
@@ -1944,10 +1959,20 @@ async function loopback({ iceServers, policy, timeout }) {
     await a.setLocalDescription(await a.createOffer()); await b.setRemoteDescription(a.localDescription);
     await b.setLocalDescription(await b.createAnswer()); await a.setRemoteDescription(b.localDescription);
     const r = await Promise.race([ok, sleep(timeout).then(() => false)]);
-    return { ok: r, ms: Math.round(now() - t0) };
+    const c = sdpCands(a.localDescription && a.localDescription.sdp); // kinds only: no addresses leave this function
+    return { ok: r, ms: Math.round(now() - t0), host: c.h, hidden: c.h > 0 && c.hid === c.h, other: c.s + c.r };
   } catch (e) { return { ok: false, err: e.message }; }
   finally { a.close(); b.close(); }
 }
+// ok: works with local addresses / ice: only through the STUN/TURN path / hidden: local addresses are hidden
+// and could not be reached (not proof that WebRTC is blocked) / ng: nothing was offered or it really failed
+const lbState = l => !l ? 'na' : l.ok ? 'ok' : l.viaIce ? 'ice' : l.hidden ? 'hidden' : 'ng';
+const LB_TEXT = {
+  ok: '端末内で接続・送受信 OK（{ms}ms）',
+  ice: '端末内テスト: ローカル IP 経由は不成立、STUN/TURN 経由は成立。ブラウザがローカル IP を隠しており、このネットワークではその名前を解決できません。同じ LAN の相手とは「LAN 内の直接接続を助ける」が必要になることがあります',
+  hidden: '端末内テストは不成立。ブラウザがローカル IP を隠しており、このネットワークではその名前を解決できないためと考えられます（WebRTC が禁止されているとは限りません）。相手との接続結果で判断してください',
+  ng: 'この端末内でも接続できません（ブラウザ設定・拡張機能・ポリシーで WebRTC が制限されている可能性）',
+};
 // Each TURN URL is tried on its own, so the report shows which transports get through this network
 // (UDP is fastest; TCP / TLS on 443 are the fallbacks when UDP is blocked).
 async function turnCheck() {
@@ -2059,7 +2084,12 @@ async function runAuto() {
 
     st = stepStart('WebRTC 単体動作（ネットワーク不要）');
     M.loopback = await loopback({ iceServers: [], timeout: 8000 });
-    stepEnd(st, M.loopback.ok ? 'pass' : 'fail', M.loopback.ok ? `端末内で接続・送受信 OK（${M.loopback.ms}ms）` : 'この端末内でも接続できません（ブラウザ設定・拡張機能・ポリシーで WebRTC が制限されている可能性）');
+    // Without servers the two ends can only meet through local addresses. When the browser hides those
+    // (mDNS names) and this network cannot resolve them, the test fails although WebRTC itself is fine:
+    // try once more with the configured STUN/TURN servers so the two cases can be told apart.
+    if (!M.loopback.ok && CFG.ice.length) M.loopback.viaIce = (await loopback({ iceServers: CFG.ice, timeout: 8000 })).ok;
+    const lbw = lbState(M.loopback);
+    stepEnd(st, lbw === 'ok' ? 'pass' : lbw === 'ng' ? 'fail' : 'warn', LB_TEXT[lbw].replace('{ms}', M.loopback.ms));
 
     st = stepStart('シグナリング（ルームへの自動接続）');
     const sigHost = CFG.server ? CFG.server.host : '0.peerjs.com';
@@ -2246,14 +2276,25 @@ function deriveCaps(M) {
   const add = (key, title, status, reason) => C.push({ key, title, status, reason });
   const peers = (M.participants || []).length - 1;
   const lb = M.loopback && M.loopback.ok;
-  add('webrtc', 'ブラウザが P2P（WebRTC）に対応 ※この端末の中だけの確認', M.browser && !M.browser.rtc ? 'ng' : lb ? 'ok' : M.loopback ? 'ng' : 'na',
-    lb ? '端末の中での接続テストに成功。他の端末とつながるかは「相手の端末との直接接続（P2P）」を見る' : M.loopback ? 'ブラウザ/ポリシーで WebRTC が制限されている可能性' : '未実施');
+  const lbw = lbState(M.loopback);
+  const linked = !!(M.mesh && M.mesh.ok); // a real connection to another device proves more than the in-device test
+  const WEBRTC = 'ブラウザが P2P（WebRTC）に対応 ※この端末の中だけの確認';
+  if (M.browser && !M.browser.rtc) add('webrtc', WEBRTC, 'ng', 'このブラウザは WebRTC に対応していない');
+  else if (lbw === 'ok') add('webrtc', WEBRTC, 'ok', '端末の中での接続テストに成功。他の端末とつながるかは「相手の端末との直接接続（P2P）」を見る');
+  else if (linked) add('webrtc', WEBRTC, 'ok', '端末の中のテストは不成立だが、実際に相手と接続できている（ローカル IP が隠されている環境で起きる）');
+  else if (lbw === 'ice') add('webrtc', WEBRTC, 'ok', 'STUN/TURN 経由では成立。ローカル IP 経由は不成立（ローカル IP が隠されている）');
+  else if (lbw === 'hidden') add('webrtc', WEBRTC, 'cond', '端末の中のテストは不成立。ローカル IP が隠されているためと考えられ、WebRTC 自体が禁止されているとは限らない → 相手と接続して確認');
+  else if (lbw === 'ng') add('webrtc', WEBRTC, 'ng', 'ブラウザ/ポリシーで WebRTC が制限されている可能性');
+  else add('webrtc', WEBRTC, 'na', '未実施');
   if (M.signal) add('room', `ルームで自動接続（シグナリング: ${M.signal.host}）`, M.signal.ok ? 'ok' : 'ng',
     M.signal.ok ? 'ルーム名を共有するだけで全員つながる' : '接続できない → 手動接続（コピペ）のみ。通信許可の申請先はこのホスト 1 つ');
   else add('room', 'ルームで自動接続（シグナリング）', 'na', '未実施');
   const manualOpen = [...links.values()].some(L => L.kind === 'manual' && L.isOpen);
-  add('manual', 'サーバーなし接続（手動コピペ）', manualOpen ? 'ok' : lb ? 'cond' : 'ng',
-    manualOpen ? '手動接続で通信できている' : lb ? '同じネットワーク内なら使える見込み（2 台ずつ・文字列のやり取りが必要）' : 'WebRTC が動かない');
+  const MANUAL = 'サーバーなし接続（手動コピペ）';
+  if (manualOpen) add('manual', MANUAL, 'ok', '手動接続で通信できている');
+  else if (lb) add('manual', MANUAL, 'cond', '同じネットワーク内なら使える見込み（2 台ずつ・文字列のやり取りが必要）');
+  else if (linked || lbw === 'ice' || lbw === 'hidden') add('manual', MANUAL, 'cond', 'ローカル IP が隠されているため、同じネットワーク内では「LAN 内の直接接続を助ける」と併用する必要がある見込み');
+  else add('manual', MANUAL, lbw === 'ng' ? 'ng' : 'na', lbw === 'ng' ? 'WebRTC が動かない' : '未実施');
   const ms = M.mesh;
   const REACH = '相手の端末との直接接続（P2P）';
   if (ms && ms.pairs) add('reach', REACH, ms.ok === ms.pairs ? 'ok' : ms.ok ? 'cond' : 'ng',
