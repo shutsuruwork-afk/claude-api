@@ -416,6 +416,77 @@ test('ファイルを直接開いたときはルーム名をコピーする', as
   await p.waitForFunction(r => document.querySelector('#log').textContent.includes(r) && !document.querySelector('#log').textContent.includes('null/'), room, { timeout: 5000 });
 });
 
+test('QR コード: 生成したものを読み取れる（短い文字列から長いリンクまで）', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => {
+    const out = [];
+    for (const n of [1, 17, 60, 120, 180, 230, 300]) {
+      const text = ('https://example.com/claude-api/#c=' + 'A1B2C3D4E5F6G7H8J9K0MNPQRSTVWXYZ'.repeat(12)).slice(0, n);
+      const c = document.createElement('canvas'); drawQr(c, text);
+      out.push(qrRead(c, c.width, c.height) === text ? 'ok' : 'ng:' + n);
+    }
+    return out;
+  });
+  assert.deepStrictEqual(r, Array(7).fill('ok'));
+});
+
+test('接続コード: 作って戻せる・打ち間違いを検出する', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(async () => {
+    const pc = new RTCPeerConnection(); pc.createDataChannel('x');
+    await pc.setLocalDescription(await pc.createOffer()); await new Promise(r => setTimeout(r, 800));
+    const code = codeOf(pc.localDescription), back = unpackDesc(b32dec(prettyCode(code).toLowerCase()));
+    const g = (sdp, re) => (sdp.match(re) || [])[1];
+    const same = ['^a=ice-ufrag:(\\S+)', '^a=ice-pwd:(\\S+)', '^a=fingerprint:sha-256 (\\S+)'].every(x => g(pc.localDescription.sdp, new RegExp(x, 'm')).toUpperCase() === g(back.sdp, new RegExp(x, 'm')).toUpperCase());
+    let typo = 'accepted';
+    try { unpackDesc(b32dec(code.slice(0, 20) + (code[20] === 'A' ? 'B' : 'A') + code.slice(21))); } catch (e) { typo = 'rejected'; }
+    let cut = 'accepted';
+    try { unpackDesc(b32dec(code.slice(0, 50))); } catch (e) { cut = 'rejected'; }
+    const fake = { type: 'answer', sdp: 'a=ice-ufrag:abcd\r\na=ice-pwd:0123456789abcdefghijklmn\r\na=fingerprint:sha-256 ' + Array(32).fill('AB').join(':') +
+      '\r\na=candidate:1 1 udp 1 192.168.1.5 50000 typ host\r\na=candidate:2 1 udp 1 203.0.113.9 60214 typ srflx raddr 0.0.0.0 rport 0\r\na=candidate:3 1 udp 1 2001:db8::5 51000 typ host\r\na=candidate:4 1 tcp 1 192.168.1.5 9 typ host\r\n' };
+    const fb = unpackDesc(packDesc(fake));
+    pc.close();
+    return { len: code.length, type: back.type, same, typo, cut, cands: (fb.sdp.match(/^a=candidate:.*$/gm) || []).map(l => l.split(' ').slice(4, 8).join(' ')), ftype: fb.type, setup: g(fb.sdp, /^a=setup:(\w+)/m) };
+  });
+  assert.ok(r.len >= 100 && r.len <= 200, 'len ' + r.len);
+  assert.deepStrictEqual({ ...r, len: 0 }, { len: 0, type: 'offer', same: true, typo: 'rejected', cut: 'rejected',
+    cands: ['192.168.1.5 50000 typ host', '203.0.113.9 60214 typ srflx', '2001:0db8:0000:0000:0000:0000:0000:0005 51000 typ host'], ftype: 'answer', setup: 'active' });
+});
+
+test('QR / コードだけで 2 台が同期する（サーバーなし）', async () => {
+  const A = await open('A'), B = await open('B');
+  for (const p of [A, B]) await p.click('#manualBox > summary');
+  const code = p => p.waitForFunction(() => document.querySelector('#qrCode').textContent.replace(/\s/g, '').length > 60 ? document.querySelector('#qrCode').textContent : false, null, { timeout: 15000 }).then(h => h.jsonValue());
+  await A.click('#qrStart');
+  const offer = await code(A);
+  // B は A の画面の QR を「読み取る」: 画面の QR 画像を実際に解読して、その中身を適用する
+  const scanned = await A.evaluate(() => { const c = document.querySelector('#qrCanvas'); return qrRead(c, c.width, c.height); });
+  assert.ok(scanned.includes('#c=' + offer.replace(/\s/g, '')), scanned);
+  assert.strictEqual(await B.evaluate(t => applyCode(t), scanned), true);
+  const answer = await code(B);
+  assert.notStrictEqual(answer, offer);
+  await A.fill('#qrIn', answer.toLowerCase()); // 返事は手で打ち込む（小文字・空白入りでもよい）
+  await A.click('#qrApply');
+  await waitSynced([A, B], 2);
+  await A.click('#grid > div:nth-child(2)');
+  await B.waitForFunction(() => document.querySelector('#grid > div:nth-child(2)').style.background !== '', null, { timeout: 10000 });
+});
+
+test('QR のリンクから開くと、返事の QR が自動で出る', async () => {
+  const A = await open('A');
+  await A.click('#manualBox > summary'); await A.click('#qrStart');
+  await A.waitForFunction(() => document.querySelector('#qrCode').textContent.length > 60, null, { timeout: 15000 });
+  const link = await A.evaluate(() => { const c = document.querySelector('#qrCanvas'); return qrRead(c, c.width, c.height); });
+  const B = await open('B', { url: link });
+  await B.waitForFunction(() => document.querySelector('#manualBox').open && /②/.test(document.querySelector('#qrTitle').textContent) && !location.hash, null, { timeout: 15000 });
+  const answer = await B.textContent('#qrCode');
+  assert.strictEqual(await A.evaluate(t => applyCode(t), answer), true);
+  await waitSynced([A, B], 2);
+  // 返事のコードを、つなぎ始めていない端末に入れても壊れない
+  const C = await open('C');
+  assert.strictEqual(await C.evaluate(t => applyCode(t), answer), false);
+});
+
 test('手動モード（SDP コピペ）だけで 2 台が同期する', async () => {
   const A = await open('A'), B = await open('B');
   const sdp = p => p.waitForFunction(() => { const v = document.querySelector('#localSdp').value; return v && !v.includes('収集中') ? v : false; }, null, { timeout: 15000 }).then(h => h.jsonValue());
