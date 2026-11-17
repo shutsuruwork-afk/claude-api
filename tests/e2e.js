@@ -99,6 +99,46 @@ test('2 台がほぼ同時に参加しても 3 台そろう', async () => {
   await waitSynced([A, B, C], 3, 12000);
 });
 
+// 全員がページを開いた状態から、同じ瞬間に「参加」を押す
+async function joinTogether(n, cfg) {
+  const room = newRoom();
+  const pages = await Promise.all([...Array(n)].map((_, i) => open('ABCDEFG'[i], { cfg })));
+  for (const p of pages) await p.fill('#room', room);
+  await Promise.all(pages.map(p => p.evaluate(() => document.querySelector('#joinBtn').click())));
+  return pages;
+}
+
+test('誰もいないルームに 5 台が同時に入っても、窓口は 1 台だけで全員そろう', async () => {
+  const pages = await joinTogether(5);
+  await waitSynced(pages, 5, 15000);
+  const beacons = await Promise.all(pages.map(p => p.evaluate(() => beaconOpen)));
+  assert.strictEqual(beacons.filter(Boolean).length, 1);
+});
+
+test('2 台が同時に全消去しても同じ状態になる', async () => {
+  const [A, B, C] = await group(3);
+  await A.click('#grid > div:nth-child(1)');
+  await waitSynced([A, B, C]);
+  await Promise.all([A, B].map(p => p.evaluate(() => document.querySelector('#clearBtn').click())));
+  for (const p of [A, B, C]) await p.waitForFunction(() => epoch === 1 && ops.size === 0, null, { timeout: 10000 });
+  await Promise.all([A, B, C].map((p, i) => p.click(`#grid > div:nth-child(${i + 2})`)));
+  for (const p of [A, B, C]) await p.waitForFunction(() => ops.size === 3, null, { timeout: 10000 });
+  await waitSynced([A, B, C]);
+});
+
+test('2 台が同時に長時間テストを開始しても 1 つにまとまる', async () => {
+  const [A, B, C] = await group(3);
+  const [ra, rb] = await Promise.all([A, B].map(p => p.evaluate(() => startLongAll({ dur: 6, win: 2 }))));
+  assert.strictEqual([ra, rb].filter(Boolean).length, 1, '結果を出すのは 1 台だけ');
+  const r = ra || rb;
+  assert.strictEqual(r.metrics.long.rows.length, 6, JSON.stringify(r.metrics.long.rows.map(x => x.from + x.to)));
+  assert.strictEqual(r.caps.find(c => c.key === 'long').status, 'ok', JSON.stringify(r.caps));
+  for (const p of [A, B, C]) {
+    await p.waitForFunction(id => loadHist().some(x => x.id === id), r.id, { timeout: 10000 });
+    assert.strictEqual(await p.evaluate(() => loadHist().length), 1);
+  }
+});
+
 test('窓口が開通直後に送った一覧・hello が失われても、すぐ参加できる', async () => {
   // ブラウザは「チャネルが開いた瞬間に応答側が送った最初のメッセージ」をまれに落とす。それを確実に再現する
   const room = newRoom();
@@ -336,6 +376,18 @@ test('TURN: 経路別に確認し、中継のみでも同期する', async () =>
     assert.strictEqual(t.ok, true);
   } finally { srv.stop(); }
 });
+
+test('2 台が同時に自動テストを開始しても、走るのは 1 つだけ', async () => {
+  const [A, B] = await group(2);
+  await Promise.all([A, B].map(p => p.evaluate(() => document.querySelector('#autoBtn').click())));
+  for (const p of [A, B]) await p.waitForFunction(() => auto && !auto.running && loadHist().length > 0, null, { timeout: 240000 });
+  const st = await Promise.all([A, B].map(p => p.evaluate(() => ({ aborted: !!auto.abort, hist: loadHist().map(x => x.id), status: document.querySelector('#autoStatus').textContent }))));
+  assert.strictEqual(st.filter(x => x.aborted).length, 1, JSON.stringify(st));
+  assert.strictEqual(st[0].hist.length, 1); assert.deepStrictEqual(st[0].hist, st[1].hist);
+  const r = await A.evaluate(() => loadHist()[0]);
+  assert.ok(!r.steps.some(x => x.status === 'fail'), JSON.stringify(r.steps, null, 1));
+  assert.strictEqual(r.caps.find(c => c.key === 'coop').status, 'ok');
+}, true);
 
 test('自動テスト（クイック）が 3 台で完走し、結果が全員に保存される', async () => {
   const [A, B, C] = await group(3);

@@ -328,7 +328,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17a';
+const BUILD = '2026-11-17b';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -715,6 +715,8 @@ function handleMessage(L, m) {
       seenFlood.add(key);
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
       if (!auto || auto.id !== m.id) { remoteAuto = { by: cleanName(m.by), text: txt(m.text).slice(0, 200), at: now() }; renderRemoteAuto(); }
+      // Two devices started at the same moment: every device applies the same rule (smaller id wins), so exactly one run continues.
+      if (auto && auto.running && auto.id !== m.id && m.id < auto.id) auto.abort = cleanName(m.by);
       break;
     }
     case 'autores': {
@@ -1172,7 +1174,10 @@ let rt = null;          // running test
 const rtResults = new Map(); // testId -> Map(from -> result msg)
 function newStat() { return { sent: 0, rtts: [], offs: [], pend: new Map(), unavailable: false }; }
 function startRt(m) {
-  if (rt && !rt.done) { log('リアルタイムテストは実行中です', 'warn'); return; }
+  if (rt && !rt.done) {
+    if (!(now() - rt.start < 5000 && m.id < rt.id && !autoBusy())) { log('リアルタイムテストは実行中です', 'warn'); return; }
+    clearInterval(rt.iv); rt.done = true; // same-moment start on two devices: keep the run with the smaller id
+  }
   if (ltRunning()) { log('長時間テスト中のためリアルタイムテストは開始しません', 'warn'); return; }
   const interval = 1000 / m.rate;
   rt = { id: m.id, rate: m.rate, size: m.size, dur: m.dur, start: now(), seq: 0, peers: new Map(), rx: new Map(),
@@ -1290,7 +1295,7 @@ function renderRt() {
   $('rtTable').innerHTML = h;
 }
 $('rtBtn').onclick = () => {
-  if (rt && !rt.done) return;
+  if ((rt && !rt.done) || autoBusy() || ltRunning()) return;
   const m = { t: 'rtstart', id: rand(8), rate: Number($('rtRate').value), size: Number($('rtSize').value), dur: Number($('rtDur').value), fromName: me.name };
   seenFlood.add('rs' + m.id);
   for (const L of links.values()) if (L.isOpen) L.send(m);
@@ -1316,7 +1321,11 @@ function ltPeer(run, L) {
   return P;
 }
 function startLt(m) {
-  if (ltRunning()) return;
+  if (ltRunning()) {
+    // started on two devices at the same moment: everyone switches to the run with the smaller id
+    if (!(now() - lt.start < 5000 && m.id < lt.id)) return;
+    clearInterval(lt.iv); lt.done = true; lt.dropped = true;
+  }
   if (rt && !rt.done) { log('リアルタイムテスト中のため長時間テストは開始しません', 'warn'); return; }
   const t = now();
   lt = { id: m.id, dur: m.dur, win: m.win, start: t, seq: 0, peers: new Map(), lastTick: t, maxTickGap: 0, hid: document.hidden,
@@ -1471,7 +1480,7 @@ function buildLongResult(id) {
   })));
 }
 async function startLongAll(opts = {}) {
-  if (ltRunning() || (auto && auto.running)) return null;
+  if (ltRunning() || autoBusy()) return null;
   const m = { t: 'ltstart', id: rand(8), dur: opts.dur || Number($('ltDur').value), win: opts.win || 60, fromName: me.name };
   seenFlood.add('ls' + m.id);
   for (const L of links.values()) if (L.isOpen) L.send(m);
@@ -1480,6 +1489,7 @@ async function startLongAll(opts = {}) {
   if (!run || run.id !== m.id) return null;
   run.mine = true;
   await waitFor(() => run.done, (m.dur + 10) * 1000, 300);
+  if (run.dropped) return null; // another device started at the same moment and its run was kept
   await waitFor(() => ltResults.get(m.id) && ltResults.get(m.id).size >= 1 + onlineOthers().length, 12000, 300);
   const result = buildLongResult(m.id);
   saveResult(result);
@@ -1499,10 +1509,13 @@ $('ltStop').onclick = () => {
   for (const L of links.values()) if (L.isOpen) L.send(m);
   stopLt(m.id);
 };
-setInterval(() => {
-  const busy = ltRunning() || !!(auto && auto.running) || !!(rt && !rt.done);
-  $('ltBtn').disabled = !enabled || busy; $('ltStop').disabled = !ltRunning();
-}, 500);
+function updateTestButtons() {
+  const a = autoBusy(), r = !!(rt && !rt.done), l = ltRunning();
+  $('ltBtn').disabled = !enabled || a || r || l; $('ltStop').disabled = !l;
+  $('rtBtn').disabled = !enabled || a || r || l;
+  $('burstBtn').disabled = !enabled || a;
+}
+setInterval(updateTestButtons, 300);
 
 // ---------- Background / sleep detection ----------
 let lastBeat = now();
@@ -1717,7 +1730,8 @@ let enabled = false;
 function enableShared(on) {
   enabled = on || enabled;
   if (!on && ![...links.values()].some(L => L.isOpen)) enabled = false;
-  for (const id of ['burstBtn', 'clearBtn', 'msg', 'send', 'rtBtn']) $(id).disabled = !enabled;
+  for (const id of ['clearBtn', 'msg', 'send']) $(id).disabled = !enabled;
+  updateTestButtons();
 }
 // allow solo use too once in a room / linked
 function sendChat() {
@@ -1905,16 +1919,22 @@ function rtVerdictOf(res) {
 }
 const vStatus = v => v.startsWith('◎') || v.startsWith('○') ? 'pass' : v.startsWith('△') ? 'warn' : 'fail';
 
+function autoBeat(text) {
+  auto.seq++;
+  const m = { t: 'autostep', id: auto.id, seq: auto.seq, by: me.name, text };
+  seenFlood.add('as' + auto.id + ':' + auto.seq);
+  for (const L of links.values()) if (L.isOpen) L.send(m);
+}
 function stepStart(title) {
+  if (auto.abort) throw new Error('ABORT');
   const st = { title, status: 'run', detail: '' };
   auto.steps.push(st);
   renderSteps();
-  auto.seq++;
-  const m = { t: 'autostep', id: auto.id, seq: auto.seq, by: me.name, text: title };
-  seenFlood.add('as' + auto.id + ':' + auto.seq);
-  for (const L of links.values()) if (L.isOpen) L.send(m);
+  autoBeat(title);
   return st;
 }
+// a run in this room (ours or someone else's): playground tests must not start meanwhile
+const autoBusy = () => !!(auto && auto.running) || !!(remoteAuto && now() - remoteAuto.at < 40000);
 function stepEnd(st, status, detail) { st.status = status; st.detail = detail; renderSteps(); }
 function renderSteps() {
   $('autoSteps').innerHTML = auto.steps.map(st => `<li><span>${ICON[st.status]}</span><span>${esc(st.title)}${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</span></li>`).join('');
@@ -1929,6 +1949,8 @@ setInterval(renderRemoteAuto, 2000);
 async function runAuto() {
   const prof = PROFILES[$('autoProfile').value];
   auto = { id: rand(10), running: true, steps: [], seq: 0, start: Date.now() };
+  // keep telling the room that a run is in progress, also during steps that take longer than the 40 s "busy" window
+  const beat = setInterval(() => { const cur = auto.steps[auto.steps.length - 1]; if (auto.running && cur) autoBeat(cur.title); }, 10000);
   const M = { profile: $('autoProfile').value };
   $('autoBtn').disabled = true;
   $('autoSummary').innerHTML = ''; $('autoSaveRow').classList.add('hidden');
@@ -2061,8 +2083,19 @@ async function runAuto() {
       }
     }
   } catch (e) {
-    if (st && st.status === 'run') stepEnd(st, 'fail', 'エラー: ' + e.message);
-    log('自動テスト中断: ' + e.message, 'ng');
+    if (!auto.abort) {
+      if (st && st.status === 'run') stepEnd(st, 'fail', 'エラー: ' + e.message);
+      log('自動テスト中断: ' + e.message, 'ng');
+    }
+  }
+  clearInterval(beat);
+  if (auto.abort) { // someone else started at the same moment and won: their run produces the shared result
+    auto.running = false;
+    $('autoSteps').innerHTML = '';
+    $('autoStatus').textContent = `${auto.abort} が同時に自動テストを開始したため、こちらは中止しました。結果は ${auto.abort} の実行が終わると共有されます`;
+    log(`自動テストを中止（${auto.abort} が同時に開始）`, 'warn');
+    renderRemoteAuto();
+    return;
   }
   const result = {
     v: 1, build: BUILD, id: auto.id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: M.profile, by: me.name,
@@ -2082,7 +2115,7 @@ async function runAuto() {
   log('自動テスト完了', 'ok');
   renderRemoteAuto();
 }
-$('autoBtn').onclick = () => { if (!(auto && auto.running) && !ltRunning()) runAuto(); };
+$('autoBtn').onclick = () => { if (!autoBusy() && !ltRunning()) runAuto(); };
 
 // ---- judge: what can be used ----
 function deriveCaps(M) {
