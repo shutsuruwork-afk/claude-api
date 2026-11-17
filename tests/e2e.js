@@ -472,6 +472,9 @@ test('直接通信が塞がれていると、自動テストは「相手は見�
   assert.deepStrictEqual(r.participants, ['B', 'A']);
   assert.strictEqual(r.caps.find(c => c.key === 'reach').status, 'ng', info);
   assert.strictEqual(r.caps.find(c => c.key === 'webrtc').status, 'ok');
+  // 「ブラウザが対応」と「相手とつながる」を取り違えない表示になっている
+  assert.match(r.caps.find(c => c.key === 'webrtc').title, /この端末の中だけの確認/);
+  assert.match(r.caps.find(c => c.key === 'reach').title, /相手の端末との直接接続/);
   assert.strictEqual(r.caps.find(c => c.key === 'room').status, 'ok');
   assert.ok(r.steps.some(x => x.status === 'fail' && /直接つながらない: /.test(x.detail)), info);
   assert.ok(r.steps.some(x => x.status === 'skip' && /省略/.test(x.detail)), info);

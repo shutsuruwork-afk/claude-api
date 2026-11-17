@@ -344,7 +344,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17d';
+const BUILD = '2026-11-17e';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -2246,8 +2246,8 @@ function deriveCaps(M) {
   const add = (key, title, status, reason) => C.push({ key, title, status, reason });
   const peers = (M.participants || []).length - 1;
   const lb = M.loopback && M.loopback.ok;
-  add('webrtc', 'P2P 通信（この端末のブラウザ）', M.browser && !M.browser.rtc ? 'ng' : lb ? 'ok' : M.loopback ? 'ng' : 'na',
-    lb ? 'ブラウザ内の接続テストに成功' : M.loopback ? 'ブラウザ/ポリシーで WebRTC が制限されている可能性' : '未実施');
+  add('webrtc', 'ブラウザが P2P（WebRTC）に対応 ※この端末の中だけの確認', M.browser && !M.browser.rtc ? 'ng' : lb ? 'ok' : M.loopback ? 'ng' : 'na',
+    lb ? '端末の中での接続テストに成功。他の端末とつながるかは「相手の端末との直接接続（P2P）」を見る' : M.loopback ? 'ブラウザ/ポリシーで WebRTC が制限されている可能性' : '未実施');
   if (M.signal) add('room', `ルームで自動接続（シグナリング: ${M.signal.host}）`, M.signal.ok ? 'ok' : 'ng',
     M.signal.ok ? 'ルーム名を共有するだけで全員つながる' : '接続できない → 手動接続（コピペ）のみ。通信許可の申請先はこのホスト 1 つ');
   else add('room', 'ルームで自動接続（シグナリング）', 'na', '未実施');
