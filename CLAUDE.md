@@ -37,6 +37,11 @@
     定期的な state vector (`sv`) 交換で欠けを補う。ハッシュは操作 ID の XOR（順序非依存）。
     「全消去」は epoch を 1 つ進める（`adoptEpoch`）。古い epoch の操作は全端末で破棄され、`sv` の `ep` で伝わる。
   - 手動モード: SDP をコピー＆ペーストで交換。STUN (stun.l.google.com) のみ使用。
+  - QR / 接続コード: `packDesc` が offer/answer を約 70〜85 バイト（ICE の ufrag・pwd、証明書の指紋 32 バイト、候補 最大 3 件）に詰め、
+    `unpackDesc` が SDP を組み立て直す。Base32（I・L・O・U なし）+ CRC8。指紋は省略できないので、これ以上は短くならない。
+    QR の生成は自前（`qrMatrix`、バイトモード・誤り訂正 L・版 1〜15）、読み取りは埋め込んだ jsQR 1.4.0（Apache-2.0）。
+    QR の中身は「この Web 版の URL + `#c=コード`」（ファイル版は `WEB_URL`）なので、スマホ標準のカメラで読むと Web 版が開いて返事の QR が出る。
+    カメラからの読み取り部分は自動テストできない（生成→解読→接続の流れはテスト済み）。
   - リアルタイム通信テスト: 各接続の RTCPeerConnection に negotiated な非信頼 DataChannel（id 100, ordered:false,
     maxRetransmits:0）を追加し、メインの信頼チャネルと比較。開始 (`rtstart`) と結果 (`rtres`) はフラッディングで全員に配る。
   - 長時間テスト: `ltstart` をフラッディングし、各端末が 20 回/秒の `lp`/`lq` を相手ごとに送って区間（既定 60 秒）ごとに記録、
