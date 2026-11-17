@@ -120,7 +120,7 @@
     </details>
     <div class="scroll"><table class="matrix" id="matrix"></table></div>
     <p class="hint legend">
-      <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> 別ネットワークと直接（NAT越え・IPv6）</span><span><b class="warn">R</b> TURN中継</span>
+      <span><b class="ok">H</b> 同じネットワーク内で直接</span><span><b class="ok">S</b> 別ネットワークと直接</span><span><b class="warn">R</b> TURN中継</span>
       <span>… 接続中</span><span><b class="ng">×</b> 失敗/再試行中</span><span>· 直接接続なし（他端末経由で同期）</span>
     </p>
     <p class="hint">各行は「その端末から見た」接続状況です。ハッシュが全員一致していれば共有データは同期しています。直接つながらない組み合わせがあっても、他の端末を経由して同期します。</p>
@@ -618,13 +618,24 @@ function sdpCands(sdp) {
   }
   return d;
 }
+// Are both devices behind the same router? Decided from the public addresses each side learned from STUN:
+// the same IPv6 /64, or (when IPv6 is not available on both sides) the same public IPv4 address.
+// null = cannot tell (one side has no public address). Addresses are compared here and nowhere stored.
+function sameSite(lo, re) {
+  const split = set => { const v4 = [], v6 = []; for (const a of set) (a.includes(':') ? v6 : v4).push(a); return { v4, v6 }; };
+  const a = split(lo.pub), b = split(re.pub);
+  const p64 = x => expand6(x).slice(0, 4).map(h => parseInt(h || '0', 16)).join(':');
+  if (a.v6.length && b.v6.length) return a.v6.some(x => b.v6.some(y => p64(x) === p64(y)));
+  if (a.v4.length && b.v4.length) return a.v4.some(x => b.v4.includes(x));
+  return null;
+}
 async function sampleLinkDiag(L) {
   const pc = L.pc;
   if (!pc || L.isOpen || L.closed || !L.peerId) return;
   try {
     const lo = sdpCands(pc.localDescription && pc.localDescription.sdp), re = sdpCands(pc.remoteDescription && pc.remoteDescription.sdp);
     const d = { lh: lo.h, lhHidden: lo.hid, ls: lo.s, lr: lo.r, rh: re.h, rhHidden: re.hid, rs: re.s, rr: re.r,
-      sameNat: lo.pub.size && re.pub.size ? [...lo.pub].some(a => re.pub.has(a)) : null,
+      sameNat: sameSite(lo, re),
       answered: !!pc.remoteDescription, pairs: 0, sent: 0, recv: 0, got: 0, ice: pc.iceConnectionState, relayOnly: !!CFG.relayOnly, lan: lanAssist };
     (await pc.getStats()).forEach(r => {
       if (r.type !== 'candidate-pair') return;
@@ -1169,8 +1180,12 @@ async function updateLinkStats(L) {
     if (!pair) return;
     const lc = stats.get(pair.localCandidateId), rc = stats.get(pair.remoteCandidateId);
     const lan = sameLan(lc && (lc.address || lc.ip), rc && (rc.address || rc.ip));
-    const r = routeLetter(lc && lc.candidateType, rc && rc.candidateType, lan);
-    const far = lan ? '' : '（別ネットワーク）';
+    let r = routeLetter(lc && lc.candidateType, rc && rc.candidateType, lan);
+    // The kind of candidate that happened to win says little (the same path shows up as host or srflx from
+    // one attempt to the next). What matters is whether both devices sit behind the same router.
+    const site = sameSite(sdpCands(pc.localDescription && pc.localDescription.sdp), sdpCands(pc.remoteDescription && pc.remoteDescription.sdp));
+    if (r !== 'R' && site !== null) r = site ? 'H' : 'S';
+    const far = site === true ? '（同じネットワーク）' : site === false || !lan ? '（別ネットワーク）' : '';
     if (r !== L.route) log(`経路 (${L.name}): ${lc && lc.candidateType} ⇄ ${rc && rc.candidateType} / ${lc && lc.protocol}${far}`);
     L.route = r;
     L.routeDetail = `${lc && lc.candidateType}⇄${rc && rc.candidateType} ${lc && lc.protocol || ''}${far}`;

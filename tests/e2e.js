@@ -158,6 +158,22 @@ test('端末内テストが不成立でも、相手とつながっていれば�
   assert.deepStrictEqual(r, ['ok', 'ok', 'cond', 'ok', 'cond', 'ng', 'ng']);
 });
 
+test('同じネットワークかどうかは、双方の公開アドレスで決める', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => {
+    const c = (...addrs) => ({ pub: new Set(addrs) });
+    return [
+      sameSite(c('203.0.113.9', '2001:db8:1:2:aaaa::1'), c('203.0.113.9', '2001:db8:1:2:bbbb::9')), // 家の Wi-Fi: 同じ /64
+      sameSite(c('203.0.113.9'), c('203.0.113.9')),                                               // IPv4 だけで同じ出口
+      sameSite(c('203.0.113.9'), c('198.51.100.7')),                                              // 別の出口
+      sameSite(c('203.0.113.9', '2001:db8:1:2::1'), c('203.0.113.9', '2400:4000:5:6::1')),        // IPv4 は同じでも IPv6 が別（事業者の共用アドレス）
+      sameSite(c('203.0.113.9'), c()),                                                            // 片方に公開アドレスがない → 判定しない
+      sameSite(c('203.0.113.9', '2001:db8:1:2::1'), c('203.0.113.9')),                            // 片方だけ IPv6 → IPv4 で比べる
+    ];
+  });
+  assert.deepStrictEqual(r, [true, true, false, false, null, true]);
+});
+
 test('つながらない理由の切り分け', async () => {
   const p = await open('U');
   const r = await p.evaluate(() => {
