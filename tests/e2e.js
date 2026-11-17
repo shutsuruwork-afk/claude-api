@@ -1,6 +1,9 @@
 // index.html の E2E テスト。外部ネットワーク不要（シグナリングはローカルの PeerJS サーバー、ICE サーバーなし）。
 //   cd tests && npm install && npx playwright install chromium && npm test
-//   node e2e.js <名前の一部>   … 一部のテストだけ実行     SKIP_SLOW=1 … 自動テスト（約 1.5 分）を省略
+//   node e2e.js --list          … テストの一覧（分類ごと）
+//   node e2e.js <名前の一部>    … テスト名か分類名に一致するものだけ実行
+//   SKIP_SLOW=1 npm test        … 時間のかかる自動テスト系（各 40 秒前後）を省略
+// テストは下の section() の分類ごとに並べる。新しいテストは当てはまる分類の中に足す。
 const path = require('path'), fs = require('fs'), http = require('http'), assert = require('assert');
 const { PeerServer } = require('peer');
 const { chromium } = require('playwright');
@@ -38,16 +41,60 @@ async function group(n, room = newRoom()) {
 // send a raw message from this page to every directly connected device
 const sendAll = (p, msg) => p.evaluate(m => { for (const L of links.values()) if (L.isOpen) L.send(m); }, msg);
 
-const tests = [];
-const test = (name, fn, slow) => tests.push({ name, fn, slow });
+// ---- 複数のテストで使う補助 ----
+// 全員がページを開いた状態から、同じ瞬間に「参加」を押す
+async function joinTogether(n, cfg) {
+  const room = newRoom();
+  const pages = await Promise.all([...Array(n)].map((_, i) => open('ABCDEFG'[i], { cfg })));
+  for (const p of pages) await p.fill('#room', room);
+  await Promise.all(pages.map(p => p.evaluate(() => document.querySelector('#joinBtn').click())));
+  return pages;
+}
 
-test('unit: IP を伏せるがブラウザのバージョンは残す', async () => {
+// 端末同士の通信が塞がれた状態: 中継のみ + TURN なし = 候補が 1 つも出ないので P2P は絶対につながらない（シグナリングは通る）
+const BLOCKED = { ice: [], relayOnly: true };
+
+const names = p => p.evaluate(() => [...members.values()].map(m => m.name).sort().join(','));
+
+// 1 台テスト: ページの中に仮の相手（iframe）を作って自動テストを流す
+async function soloRun(p) {
+  await p.fill('#autoLabel', '自宅');
+  await p.click('#soloBtn');
+  await p.waitForFunction(() => auto && !auto.running && lastResult, null, { timeout: 240000 });
+  const r = await p.evaluate(() => lastResult);
+  const info = JSON.stringify(r.steps, null, 1);
+  const cap = k => (r.caps.find(c => c.key === k) || {}).status;
+  assert.strictEqual(r.solo, true);
+  assert.strictEqual(r.label, '【1 台テスト】自宅');
+  assert.deepStrictEqual(r.participants, ['S', 'S（仮の相手）']);
+  assert.ok(!r.steps.some(x => x.status === 'fail'), info);
+  assert.strictEqual(cap('solo'), 'ok', info);
+  assert.strictEqual(cap('room'), 'ok');
+  // 端末の外に出ていない計測は「使える」と表示しない
+  for (const k of ['reach', 'lan', 'mesh', 'board', 'coop', 'action', 'bigdata', 'fast', 'file', 'recover', 'clock']) assert.strictEqual(cap(k), 'na', k);
+  assert.match(r.caps.find(c => c.key === 'coop').reason, /1 台テストでは未検証（この端末の中では ○/);
+  assert.deepStrictEqual(r.metrics.rt30.bg, [], '仮の相手のタイマーが遅れている');
+  assert.deepStrictEqual(await p.evaluate(() => loadHist().map(x => [x.id, !!x.received])), [[r.id, false]]);
+  await p.click('#soloClose');
+  await p.waitForFunction(() => !document.querySelector('#soloHolder iframe') && members.size === 0, null, { timeout: 10000 });
+}
+
+const tests = [];
+let currentSection = '';
+const section = name => { currentSection = name; };
+const test = (name, fn, slow) => tests.push({ section: currentSection, name, fn, slow });
+
+// ======================================================================
+section('単体（ページの中の関数）');
+// ======================================================================
+
+test('IP を伏せるがブラウザのバージョンは残す', async () => {
   const p = await open('U');
   const out = await p.evaluate(() => maskIps('Chrome/130.0.0.0 Safari/537.36 srflx 203.0.113.7:54321 http://10.0.0.1/x 2001:db8::1:2 12:34:56'));
   assert.strictEqual(out, 'Chrome/130.0.0.0 Safari/537.36 srflx [IP] http://[IP]/x [IP] 12:34:56');
 });
 
-test('unit: ルーム ID は常に PeerJS で有効・名前ごとに別', async () => {
+test('ルーム ID は常に PeerJS で有効・名前ごとに別', async () => {
   const p = await open('U');
   const names = ['会議室', 'テスト', 'Room A', 'room-abc', 'a__b', '_x', 'ＡＢＣ', 'abc', ' Abc '];
   const ids = await p.evaluate(ns => ns.map(beaconIdOf), names);
@@ -58,7 +105,7 @@ test('unit: ルーム ID は常に PeerJS で有効・名前ごとに別', async
   assert.strictEqual(ids[7], ids[8]);
 });
 
-test('unit: 経路の判定（host 同士でも別ネットワークなら S）', async () => {
+test('経路の判定（host 同士でも別ネットワークなら S）', async () => {
   const p = await open('U');
   const r = await p.evaluate(() => [
     sameLan('192.168.1.5', '192.168.1.9'), sameLan('10.0.0.1', '192.168.1.9'), sameLan('abcd.local', '203.0.113.5'), sameLan(undefined, undefined),
@@ -69,7 +116,7 @@ test('unit: 経路の判定（host 同士でも別ネットワークなら S）'
   assert.deepStrictEqual(r, [true, true, true, true, true, true, false, false, 'H', 'S', 'S', 'R']);
 });
 
-test('unit: 結果の検証と、バックグラウンド端末がある場合の判定', async () => {
+test('結果の検証と、バックグラウンド端末がある場合の判定', async () => {
   const p = await open('U');
   const r = await p.evaluate(() => {
     const ok = { id: 'a', ts: 1, by: 'x', caps: [{ key: 'k', title: 't', reason: 'r', status: 'ok' }], participants: ['x'], steps: [{ title: 's', status: 'pass' }], device: {} };
@@ -80,6 +127,30 @@ test('unit: 結果の検証と、バックグラウンド端末がある場合�
   });
   assert.deepStrictEqual(r, [true, false, false, false, false, false, 'ok', 'cond']);
 });
+
+test('つながらない理由の切り分け', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => {
+    const base = { lh: 1, lhHidden: 1, ls: 1, lr: 0, rh: 1, rhHidden: 1, rs: 1, rr: 0, sameNat: true, answered: true, pairs: 2, sent: 40, recv: 0, got: 0 };
+    const sdp = 'v=0\r\na=candidate:1 1 udp 2113937151 0a1b2c3d-1111.local 54321 typ host generation 0\r\na=candidate:2 1 udp 1677729535 203.0.113.9 60214 typ srflx raddr 0.0.0.0 rport 0\r\na=candidate:3 1 tcp 1518280447 192.168.1.5 9 typ host tcptype active\r\n';
+    const c = sdpCands(sdp);
+    return [diagReason(base), diagReason({ ...base, lhHidden: 0, rhHidden: 0, lan: true }), diagReason({ ...base, sameNat: false }), diagReason({ ...base, sameNat: null, ls: 0, rs: 0 }),
+      diagReason({ ...base, rh: 0, rs: 0 }), diagReason({ ...base, lh: 0, ls: 0, relayOnly: true }), diagReason({ ...base, answered: false }), [c.h, c.hid, c.s, c.r, c.pub.size]];
+  });
+  assert.match(r[0], /同じネットワーク.*ローカル IP を隠している.*LAN 内の直接接続を助ける/);
+  assert.match(r[1], /ローカル IP を伝えても届かない.*端末間通信が禁止.*TURN/);
+  assert.match(r[2], /別々のネットワーク.*TURN/);
+  assert.match(r[3], /同じネットワークかどうかは判定できない/);
+  assert.match(r[4], /相手から接続候補が届いていない/);
+  assert.match(r[5], /TURN 中継のみ/);
+  assert.match(r[6], /返事が来ていない/);
+  assert.deepStrictEqual(r[7], [2, 1, 1, 0, 1]);
+  for (const t of r.slice(0, 7)) assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(t), 'IP が理由の文に出ている');
+});
+
+// ======================================================================
+section('参加と合流');
+// ======================================================================
 
 test('3 台が同期し、マス目とチャットが全員に届く', async () => {
   const [A, B, C] = await group(3);
@@ -99,44 +170,11 @@ test('2 台がほぼ同時に参加しても 3 台そろう', async () => {
   await waitSynced([A, B, C], 3, 12000);
 });
 
-// 全員がページを開いた状態から、同じ瞬間に「参加」を押す
-async function joinTogether(n, cfg) {
-  const room = newRoom();
-  const pages = await Promise.all([...Array(n)].map((_, i) => open('ABCDEFG'[i], { cfg })));
-  for (const p of pages) await p.fill('#room', room);
-  await Promise.all(pages.map(p => p.evaluate(() => document.querySelector('#joinBtn').click())));
-  return pages;
-}
-
 test('誰もいないルームに 5 台が同時に入っても、窓口は 1 台だけで全員そろう', async () => {
   const pages = await joinTogether(5);
   await waitSynced(pages, 5, 15000);
   const beacons = await Promise.all(pages.map(p => p.evaluate(() => beaconOpen)));
   assert.strictEqual(beacons.filter(Boolean).length, 1);
-});
-
-test('2 台が同時に全消去しても同じ状態になる', async () => {
-  const [A, B, C] = await group(3);
-  await A.click('#grid > div:nth-child(1)');
-  await waitSynced([A, B, C]);
-  await Promise.all([A, B].map(p => p.evaluate(() => document.querySelector('#clearBtn').click())));
-  for (const p of [A, B, C]) await p.waitForFunction(() => epoch === 1 && ops.size === 0, null, { timeout: 10000 });
-  await Promise.all([A, B, C].map((p, i) => p.click(`#grid > div:nth-child(${i + 2})`)));
-  for (const p of [A, B, C]) await p.waitForFunction(() => ops.size === 3, null, { timeout: 10000 });
-  await waitSynced([A, B, C]);
-});
-
-test('2 台が同時に長時間テストを開始しても 1 つにまとまる', async () => {
-  const [A, B, C] = await group(3);
-  const [ra, rb] = await Promise.all([A, B].map(p => p.evaluate(() => startLongAll({ dur: 6, win: 2 }))));
-  assert.strictEqual([ra, rb].filter(Boolean).length, 1, '結果を出すのは 1 台だけ');
-  const r = ra || rb;
-  assert.strictEqual(r.metrics.long.rows.length, 6, JSON.stringify(r.metrics.long.rows.map(x => x.from + x.to)));
-  assert.strictEqual(r.caps.find(c => c.key === 'long').status, 'ok', JSON.stringify(r.caps));
-  for (const p of [A, B, C]) {
-    await p.waitForFunction(id => loadHist().some(x => x.id === id), r.id, { timeout: 10000 });
-    assert.strictEqual(await p.evaluate(() => loadHist().length), 1);
-  }
 });
 
 test('窓口が開通直後に送った一覧・hello が失われても、すぐ参加できる', async () => {
@@ -171,46 +209,44 @@ test('窓口の端末が抜けたら残りが窓口を引き継ぎ、新規参�
   await waitSynced([B, C, D], 3, 30000);
 });
 
-test('unit: つながらない理由の切り分け', async () => {
-  const p = await open('U');
-  const r = await p.evaluate(() => {
-    const base = { lh: 1, lhHidden: 1, ls: 1, lr: 0, rh: 1, rhHidden: 1, rs: 1, rr: 0, sameNat: true, answered: true, pairs: 2, sent: 40, recv: 0, got: 0 };
-    const sdp = 'v=0\r\na=candidate:1 1 udp 2113937151 0a1b2c3d-1111.local 54321 typ host generation 0\r\na=candidate:2 1 udp 1677729535 203.0.113.9 60214 typ srflx raddr 0.0.0.0 rport 0\r\na=candidate:3 1 tcp 1518280447 192.168.1.5 9 typ host tcptype active\r\n';
-    const c = sdpCands(sdp);
-    return [diagReason(base), diagReason({ ...base, lhHidden: 0, rhHidden: 0, lan: true }), diagReason({ ...base, sameNat: false }), diagReason({ ...base, sameNat: null, ls: 0, rs: 0 }),
-      diagReason({ ...base, rh: 0, rs: 0 }), diagReason({ ...base, lh: 0, ls: 0, relayOnly: true }), diagReason({ ...base, answered: false }), [c.h, c.hid, c.s, c.r, c.pub.size]];
-  });
-  assert.match(r[0], /同じネットワーク.*ローカル IP を隠している.*LAN 内の直接接続を助ける/);
-  assert.match(r[1], /ローカル IP を伝えても届かない.*端末間通信が禁止.*TURN/);
-  assert.match(r[2], /別々のネットワーク.*TURN/);
-  assert.match(r[3], /同じネットワークかどうかは判定できない/);
-  assert.match(r[4], /相手から接続候補が届いていない/);
-  assert.match(r[5], /TURN 中継のみ/);
-  assert.match(r[6], /返事が来ていない/);
-  assert.deepStrictEqual(r[7], [2, 1, 1, 0, 1]);
-  for (const t of r.slice(0, 7)) assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(t), 'IP が理由の文に出ている');
-});
-
-test('候補は出ているのに届かない場合、理由と候補の内訳を表示する', async () => {
-  const room = newRoom();
-  // 相手の候補をすべて捨てる = パケットが 1 つも届かないネットワークと同じ状態
-  const drop = p => p.evaluate(() => { RTCPeerConnection.prototype.addIceCandidate = async () => {}; });
-  const A = await open('A'); await drop(A); await A.fill('#room', room); await A.click('#joinBtn');
+test('日本語のルーム名で接続でき、別の名前とは混ざらない', async () => {
+  const s = Date.now().toString(36);
+  const A = await open('A', { room: '会議室' + s });
   await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
-  const B = await open('B'); await drop(B); await B.fill('#room', room); await B.click('#joinBtn');
-  for (const p of [A, B]) {
-    await p.waitForFunction(() => /見つかりましたが、直接つながりません/.test(document.querySelector('#syncBanner').textContent) && document.querySelector('#whyBox').textContent !== '', null, { timeout: 45000 });
-    const why = await p.textContent('#whyBox');
-    assert.match(why, /自分の候補: host [1-9]/, why);
-    assert.match(why, /相手から接続候補が届いていない|パケットが届かない/, why);
-    assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(why), 'IP が出ている');
-  }
-  assert.match(await A.evaluate(() => buildReport()), /つながらない理由: /);
+  const B2 = await open('B', { room: '会議室' + s });
+  const X = await open('X', { room: 'テスト' + s });
+  await waitSynced([A, B2], 2);
+  await X.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  await X.waitForTimeout(3000);
+  assert.match(await banner(X), /自分だけです/);
+  assert.match(await banner(A), SYNCED(2));
 });
 
-// 端末同士の通信が塞がれた状態: 中継のみ + TURN なし = 候補が 1 つも出ないので P2P は絶対につながらない（シグナリングは通る）
-const BLOCKED = { ice: [], relayOnly: true };
-const names = p => p.evaluate(() => [...members.values()].map(m => m.name).sort().join(','));
+test('ファイルを直接開いたときはルーム名をコピーする', async () => {
+  const p = await open('F', { url: 'file://' + FILE });
+  await p.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+  assert.strictEqual(await p.textContent('#shareBtn'), 'ルーム名をコピー');
+  const room = await p.inputValue('#room');
+  await p.click('#shareBtn');
+  await p.waitForFunction(r => document.querySelector('#log').textContent.includes(r) && !document.querySelector('#log').textContent.includes('null/'), room, { timeout: 5000 });
+});
+
+test('手動モード（SDP コピペ）だけで 2 台が同期する', async () => {
+  const A = await open('A'), B = await open('B');
+  const sdp = p => p.waitForFunction(() => { const v = document.querySelector('#localSdp').value; return v && !v.includes('収集中') ? v : false; }, null, { timeout: 15000 }).then(h => h.jsonValue());
+  for (const p of [A, B]) await p.click('#manualBox > summary');
+  await A.click('#mkOffer');
+  await B.fill('#remoteSdp', await sdp(A)); await B.click('#applyRemote');
+  await B.waitForFunction(() => /アンサー作成完了/.test(document.querySelector('#log').textContent), null, { timeout: 15000 });
+  await A.fill('#remoteSdp', await sdp(B)); await A.click('#applyRemote');
+  await waitSynced([A, B], 2);
+  await A.click('#grid > div:nth-child(2)');
+  await B.waitForFunction(() => document.querySelector('#grid > div:nth-child(2)').style.background !== '', null, { timeout: 10000 });
+});
+
+// ======================================================================
+section('つながらないとき');
+// ======================================================================
 
 test('直接通信が塞がれていても相手を発見し、理由を表示する（3 台）', async () => {
   const room = newRoom();
@@ -229,23 +265,21 @@ test('直接通信が塞がれていても相手を発見し、理由を表示�
   }
 });
 
-test('直接通信が塞がれていると、自動テストは「相手は見つかったがつながらない」と判定する', async () => {
+test('候補は出ているのに届かない場合、理由と候補の内訳を表示する', async () => {
   const room = newRoom();
-  const A = await open('A', { room, cfg: BLOCKED });
+  // 相手の候補をすべて捨てる = パケットが 1 つも届かないネットワークと同じ状態
+  const drop = p => p.evaluate(() => { RTCPeerConnection.prototype.addIceCandidate = async () => {}; });
+  const A = await open('A'); await drop(A); await A.fill('#room', room); await A.click('#joinBtn');
   await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
-  const B = await open('B', { room, cfg: BLOCKED });
-  await B.waitForFunction(() => members.size === 1, null, { timeout: 10000 });
-  await B.click('#autoBtn');
-  await B.waitForFunction(() => auto && !auto.running && lastResult, null, { timeout: 90000 });
-  const r = await B.evaluate(() => lastResult);
-  const info = JSON.stringify(r.steps, null, 1);
-  assert.deepStrictEqual(r.participants, ['B', 'A']);
-  assert.strictEqual(r.caps.find(c => c.key === 'reach').status, 'ng', info);
-  assert.strictEqual(r.caps.find(c => c.key === 'webrtc').status, 'ok');
-  assert.strictEqual(r.caps.find(c => c.key === 'room').status, 'ok');
-  assert.ok(r.steps.some(x => x.status === 'fail' && /直接つながらない: /.test(x.detail)), info);
-  assert.ok(r.steps.some(x => x.status === 'skip' && /省略/.test(x.detail)), info);
-  assert.ok(r.build);
+  const B = await open('B'); await drop(B); await B.fill('#room', room); await B.click('#joinBtn');
+  for (const p of [A, B]) {
+    await p.waitForFunction(() => /見つかりましたが、直接つながりません/.test(document.querySelector('#syncBanner').textContent) && document.querySelector('#whyBox').textContent !== '', null, { timeout: 35000 });
+    const why = await p.textContent('#whyBox');
+    assert.match(why, /自分の候補: host [1-9]/, why);
+    assert.match(why, /相手から接続候補が届いていない|パケットが届かない/, why);
+    assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(why), 'IP が出ている');
+  }
+  assert.match(await A.evaluate(() => buildReport()), /つながらない理由: /);
 });
 
 test('窓口が古い版で応答しなくても「ルームに他の端末がいる」と表示する', async () => {
@@ -276,18 +310,28 @@ test('「LAN 内の直接接続を助ける」でローカル IP が相手に伝
   assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(await p.textContent('#diagOut')), '診断画面に IP が出ている');
 });
 
-test('日本語のルーム名で接続でき、別の名前とは混ざらない', async () => {
-  const s = Date.now().toString(36);
-  const A = await open('A', { room: '会議室' + s });
-  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
-  const B2 = await open('B', { room: '会議室' + s });
-  const X = await open('X', { room: 'テスト' + s });
-  await waitSynced([A, B2], 2);
-  await X.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
-  await X.waitForTimeout(3000);
-  assert.match(await banner(X), /自分だけです/);
-  assert.match(await banner(A), SYNCED(2));
+test('TURN: 経路別に確認し、中継のみでも同期する', async () => {
+  const Turn = require('node-turn');
+  const srv = new Turn({ listeningPort: 3479, listeningIps: ['127.0.0.1'], relayIps: ['127.0.0.1'], authMech: 'long-term', credentials: { u: 'p' }, debugLevel: 'OFF' });
+  srv.start();
+  try {
+    const ice = [{ urls: 'turn:127.0.0.1:3479', username: 'u', credential: 'p' }, { urls: 'turn:127.0.0.1:3480?transport=tcp', username: 'u', credential: 'p' }];
+    const room = newRoom();
+    const mk = name => open(name, { room, cfg: { ice, relayOnly: true } });
+    const A = await mk('A');
+    await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+    const B = await mk('B');
+    await waitSynced([A, B], 2);
+    await A.waitForFunction(() => [...links.values()].some(L => L.route === 'R'), null, { timeout: 10000 });
+    const t = await A.evaluate(() => turnCheck());
+    assert.deepStrictEqual(t.per.map(x => [x.label, x.ok]), [['UDP', true], ['TCP', false]]);
+    assert.strictEqual(t.ok, true);
+  } finally { srv.stop(); }
 });
+
+// ======================================================================
+section('共有データ');
+// ======================================================================
 
 test('一斉書き込み 1000 回が書き込み完了から 5 秒以内に収束する', async () => {
   const [A, B, C] = await group(3);
@@ -311,6 +355,21 @@ test('全消去で操作ログが全端末から消え、後から来た端末�
   await waitSynced([A, B, C, D], 4);
   for (const p of [A, B, C, D]) assert.deepStrictEqual(await p.evaluate(() => [ops.size, epoch]), [1, 1]);
 });
+
+test('2 台が同時に全消去しても同じ状態になる', async () => {
+  const [A, B, C] = await group(3);
+  await A.click('#grid > div:nth-child(1)');
+  await waitSynced([A, B, C]);
+  await Promise.all([A, B].map(p => p.evaluate(() => document.querySelector('#clearBtn').click())));
+  for (const p of [A, B, C]) await p.waitForFunction(() => epoch === 1 && ops.size === 0, null, { timeout: 10000 });
+  await Promise.all([A, B, C].map((p, i) => p.click(`#grid > div:nth-child(${i + 2})`)));
+  for (const p of [A, B, C]) await p.waitForFunction(() => ops.size === 3, null, { timeout: 10000 });
+  await waitSynced([A, B, C]);
+});
+
+// ======================================================================
+section('不正な入力への耐性');
+// ======================================================================
 
 test('他端末からの不正な値で表示が壊れない・スクリプトが実行されない', async () => {
   const [A, B] = await group(2);
@@ -348,27 +407,9 @@ test('壊れた履歴が保存されていてもページが動く', async () =>
   await p.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
 });
 
-test('ファイルを直接開いたときはルーム名をコピーする', async () => {
-  const p = await open('F', { url: 'file://' + FILE });
-  await p.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
-  assert.strictEqual(await p.textContent('#shareBtn'), 'ルーム名をコピー');
-  const room = await p.inputValue('#room');
-  await p.click('#shareBtn');
-  await p.waitForFunction(r => document.querySelector('#log').textContent.includes(r) && !document.querySelector('#log').textContent.includes('null/'), room, { timeout: 5000 });
-});
-
-test('手動モード（SDP コピペ）だけで 2 台が同期する', async () => {
-  const A = await open('A'), B = await open('B');
-  const sdp = p => p.waitForFunction(() => { const v = document.querySelector('#localSdp').value; return v && !v.includes('収集中') ? v : false; }, null, { timeout: 15000 }).then(h => h.jsonValue());
-  for (const p of [A, B]) await p.click('#manualBox > summary');
-  await A.click('#mkOffer');
-  await B.fill('#remoteSdp', await sdp(A)); await B.click('#applyRemote');
-  await B.waitForFunction(() => /アンサー作成完了/.test(document.querySelector('#log').textContent), null, { timeout: 15000 });
-  await A.fill('#remoteSdp', await sdp(B)); await A.click('#applyRemote');
-  await waitSynced([A, B], 2);
-  await A.click('#grid > div:nth-child(2)');
-  await B.waitForFunction(() => document.querySelector('#grid > div:nth-child(2)').style.background !== '', null, { timeout: 10000 });
-});
+// ======================================================================
+section('長時間テスト');
+// ======================================================================
 
 test('長時間テスト: 切断なしなら ✅、結果が全員に保存される', async () => {
   const [A, B, C] = await group(3);
@@ -401,24 +442,49 @@ test('長時間テスト: 途中の切断と復帰を記録し ⚠️ になる�
   assert.strictEqual(L.rows.find(x => x.from === 'A' && x.to === 'C').drops, 0);
 });
 
-test('TURN: 経路別に確認し、中継のみでも同期する', async () => {
-  const Turn = require('node-turn');
-  const srv = new Turn({ listeningPort: 3479, listeningIps: ['127.0.0.1'], relayIps: ['127.0.0.1'], authMech: 'long-term', credentials: { u: 'p' }, debugLevel: 'OFF' });
-  srv.start();
-  try {
-    const ice = [{ urls: 'turn:127.0.0.1:3479', username: 'u', credential: 'p' }, { urls: 'turn:127.0.0.1:3480?transport=tcp', username: 'u', credential: 'p' }];
-    const room = newRoom();
-    const mk = name => open(name, { room, cfg: { ice, relayOnly: true } });
-    const A = await mk('A');
-    await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
-    const B = await mk('B');
-    await waitSynced([A, B], 2);
-    await A.waitForFunction(() => [...links.values()].some(L => L.route === 'R'), null, { timeout: 10000 });
-    const t = await A.evaluate(() => turnCheck());
-    assert.deepStrictEqual(t.per.map(x => [x.label, x.ok]), [['UDP', true], ['TCP', false]]);
-    assert.strictEqual(t.ok, true);
-  } finally { srv.stop(); }
+test('2 台が同時に長時間テストを開始しても 1 つにまとまる', async () => {
+  const [A, B, C] = await group(3);
+  const [ra, rb] = await Promise.all([A, B].map(p => p.evaluate(() => startLongAll({ dur: 6, win: 2 }))));
+  assert.strictEqual([ra, rb].filter(Boolean).length, 1, '結果を出すのは 1 台だけ');
+  const r = ra || rb;
+  assert.strictEqual(r.metrics.long.rows.length, 6, JSON.stringify(r.metrics.long.rows.map(x => x.from + x.to)));
+  assert.strictEqual(r.caps.find(c => c.key === 'long').status, 'ok', JSON.stringify(r.caps));
+  for (const p of [A, B, C]) {
+    await p.waitForFunction(id => loadHist().some(x => x.id === id), r.id, { timeout: 10000 });
+    assert.strictEqual(await p.evaluate(() => loadHist().length), 1);
+  }
 });
+
+// ======================================================================
+section('自動テスト');
+// ======================================================================
+
+test('直接通信が塞がれていると、自動テストは「相手は見つかったがつながらない」と判定する', async () => {
+  const room = newRoom();
+  const A = await open('A', { room, cfg: BLOCKED });
+  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  const B = await open('B', { room, cfg: BLOCKED });
+  await B.waitForFunction(() => members.size === 1, null, { timeout: 10000 });
+  await B.click('#autoBtn');
+  await B.waitForFunction(() => auto && !auto.running && lastResult, null, { timeout: 90000 });
+  const r = await B.evaluate(() => lastResult);
+  const info = JSON.stringify(r.steps, null, 1);
+  assert.deepStrictEqual(r.participants, ['B', 'A']);
+  assert.strictEqual(r.caps.find(c => c.key === 'reach').status, 'ng', info);
+  assert.strictEqual(r.caps.find(c => c.key === 'webrtc').status, 'ok');
+  assert.strictEqual(r.caps.find(c => c.key === 'room').status, 'ok');
+  assert.ok(r.steps.some(x => x.status === 'fail' && /直接つながらない: /.test(x.detail)), info);
+  assert.ok(r.steps.some(x => x.status === 'skip' && /省略/.test(x.detail)), info);
+  assert.ok(r.build);
+});
+
+test('1 台テスト: 仮の相手と自動テストが完走し、ネットワーク項目は未検証のまま', async () => {
+  await soloRun(await open('S'));
+}, true);
+
+test('1 台テスト: ファイルを直接開いた場合も動く', async () => {
+  await soloRun(await open('S', { url: 'file://' + FILE }));
+}, true);
 
 test('2 台が同時に自動テストを開始しても、走るのは 1 つだけ', async () => {
   const [A, B] = await group(2);
@@ -455,32 +521,45 @@ test('自動テスト（クイック）が 3 台で完走し、結果が全員�
 
 (async () => {
   const filter = process.argv[2];
+  if (filter === '--list') {
+    let sec = '';
+    for (const t of tests) { if (t.section !== sec) console.log(`\n■ ${sec = t.section}`); console.log(`  - ${t.name}${t.slow ? '（時間がかかる）' : ''}`); }
+    console.log(`\n計 ${tests.length} 件`);
+    return;
+  }
   PeerServer({ port: SIG, host: '127.0.0.1', path: '/' });
   http.createServer((q, res) => { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(fs.readFileSync(FILE)); }).listen(WEB, '127.0.0.1');
   // 通常の Chromium を使う（既定のヘッドレス専用ビルドは getUserMedia に対応していない）。偽のマイクを使い、実機のマイクは使わない
   browser = await chromium.launch(Object.assign({ args: ['--use-fake-device-for-media-stream'] },
     process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : { channel: 'chromium' })); // CHROMIUM_PATH: 既存の Chromium を使う場合に指定
-  let failed = 0;
+  let failed = 0, passed = 0, skipped = 0, sec = '';
+  const started = Date.now();
   for (const t of tests) {
-    if (filter && !t.name.includes(filter)) continue;
-    if (t.slow && process.env.SKIP_SLOW) { console.log(`- skip ${t.name}`); continue; }
+    if (filter && !t.name.includes(filter) && !t.section.includes(filter)) continue;
+    if (t.section !== sec) console.log(`\n■ ${sec = t.section}`);
+    if (t.slow && process.env.SKIP_SLOW) { skipped++; console.log(`- 省略 ${t.name}`); continue; }
     opened = []; errors = [];
     const t0 = Date.now();
     try {
       await t.fn();
       assert.deepStrictEqual(errors, [], 'ページ内で例外が発生');
+      passed++;
       console.log(`✓ ${t.name} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     } catch (e) {
       failed++;
+      if (errors.length) console.log(`  ページ内の例外: ${errors.join(' / ')}`);
       console.log(`✗ ${t.name}\n  ${String(e.message).split('\n').join('\n  ')}`);
       for (const o of opened) {
         const tail = await o.page.evaluate(() => [...document.querySelectorAll('#log > div')].slice(-12).map(d => d.textContent).join('\n      ')).catch(() => '(closed)');
         console.log(`    [${o.name}] ${await o.page.textContent('#syncBanner').catch(() => '')}\n      ${tail}`);
+        const state = await o.page.evaluate(() => JSON.stringify({ links: [...links.values()].map(L => ({ to: L.name, state: L.state, init: L.initiator === me.id, age: Math.round((now() - L.createdAt) / 1000) })),
+          attempts: [...attempts].map(([id, a]) => ({ to: (members.get(id) || {}).name || id, n: a.n, f: a.f || 0 })) })).catch(() => '');
+        if (state) console.log(`      状態: ${state}`);
       }
     }
     for (const o of opened) await o.ctx.close().catch(() => {});
   }
   await browser.close();
-  console.log(failed ? `\n${failed} 件失敗` : '\nすべて成功');
+  console.log(`\n${failed ? failed + ' 件失敗' : 'すべて成功'}（成功 ${passed} / 失敗 ${failed}${skipped ? ' / 省略 ' + skipped : ''}、${((Date.now() - started) / 1000).toFixed(0)} 秒）`);
   process.exit(failed ? 1 : 0);
 })();

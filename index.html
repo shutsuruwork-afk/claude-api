@@ -73,6 +73,8 @@
   .caps li b { color: var(--fg); } .caps li small { display: block; color: var(--muted); }
   table.cmp td, table.cmp th { white-space: normal; min-width: 70px; }
   table.cmp td:first-child { min-width: 180px; }
+  #soloHolder iframe { width: 100%; height: 190px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+  body.sub h1, body.sub .lead, body.sub #howto { display: none; }
 </style>
 </head>
 <body>
@@ -97,11 +99,45 @@
     <p class="hint">全員が同じルーム名で参加すると、自動的に全員同士（フルメッシュ）で接続します。最初の接続情報の交換だけ PeerJS のシグナリングサーバーを使い、データは端末間で直接流れます。</p>
   </section>
 
+  <!-- ===== Sync status ===== -->
+  <section>
+    <h2>同期状況（全端末）</h2>
+    <div class="banner" id="syncBanner">ルームに参加してください</div>
+    <div id="whyBox" class="hint"></div>
+    <details id="helpBox">
+      <summary>相手が出てこない・つながらないとき</summary>
+      <ol class="hint">
+        <li><b>全員が同じ版のファイル</b>を使っているか（ページ上部の「版」が同じか）。古い版が混ざると見つからないことがあります。</li>
+        <li><b>ルーム名が全員同じ</b>か（「ルーム名をコピー」で渡すのが確実）。</li>
+        <li>上の帯に<b>「見つかりましたが、直接つながりません」</b>と出る場合: 同じ Wi-Fi でも、端末同士の通信が止められている・端末の場所（ローカル IP）が相手に伝わらない、のどちらかです。
+          <ul>
+            <li>まず下のボタンを<b>どちらか 1 台以上</b>で押す（マイクは使いません。許可するとブラウザがローカル IP を隠さなくなり、同じ LAN 内で直接つながりやすくなります。ローカル IP はルームの相手とシグナリングサーバーに伝わります）。</li>
+            <li>それでもだめなら、端末同士の通信そのものが止められています → TURN 中継が必要です（TESTING.md「迂回策」）。</li>
+          </ul>
+        </li>
+      </ol>
+      <div class="row"><button id="lanBtn">LAN 内の直接接続を助ける（マイクの許可を求めます）</button><span class="hint" id="lanState"></span></div>
+    </details>
+    <div class="scroll"><table class="matrix" id="matrix"></table></div>
+    <p class="hint legend">
+      <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> 別ネットワークと直接（NAT越え・IPv6）</span><span><b class="warn">R</b> TURN中継</span>
+      <span>… 接続中</span><span><b class="ng">×</b> 失敗/再試行中</span><span>· 直接接続なし（他端末経由で同期）</span>
+    </p>
+    <p class="hint">各行は「その端末から見た」接続状況です。ハッシュが全員一致していれば共有データは同期しています。直接つながらない組み合わせがあっても、他の端末を経由して同期します。</p>
+  </section>
+
+  <h2 class="divider">テスト（上から順に）</h2>
+  <ol class="hint" id="howto">
+    <li><b>1 台テスト</b> — 相手がいなくても実行できます。この端末・ブラウザと、ここからのサーバー接続が使えるかを確認します（端末同士のネットワークは測れません）。</li>
+    <li><b>全員で自動テスト</b> — 全員が同じルームに入り、誰か 1 人が押します。つながるか・何が作れるかを判定します。</li>
+    <li><b>長時間テスト</b> — 実際に遊ぶ人数で、ゲーム 1 回分の時間もつかを確認します。</li>
+  </ol>
+
   <!-- ===== Auto test ===== -->
   <section>
     <h2>自動テスト</h2>
     <p class="hint">ボタン 1 つで、この端末単体の確認と、同じルームにいる全端末との通信テストを順番に行い、「何が使えるか」を判定します。
-      他の端末は同じルームに入っておくだけで OK（操作不要）。相手がいない場合は端末単体の項目だけ判定します。</p>
+      他の端末は同じルームに入っておくだけで OK（操作不要）。相手がいないときは「この端末だけで試す」を使ってください。</p>
     <label class="blk" for="autoLabel">テスト条件メモ（結果と一緒に保存されます）</label>
     <input id="autoLabel" list="autoLabelList" placeholder="例: 社内LAN 3F / PC⇄スマホ(モバイル回線)" style="width:100%">
     <datalist id="autoLabelList">
@@ -111,7 +147,13 @@
     <div class="row">
       <select id="autoProfile"><option value="quick" selected>クイック（約 1 分）</option><option value="full">じっくり（約 3 分）</option></select>
       <button class="primary" id="autoBtn">自動テストを開始</button>
+      <button id="soloBtn">この端末だけで試す（1 台テスト）</button>
       <span class="hint" id="autoWho"></span>
+    </div>
+    <div id="soloBox" class="hidden">
+      <p class="hint">1 台テスト: この端末の中に「仮の相手」をもう 1 つ動かして、ひととおりのテストを流します。下の枠が仮の相手です（操作不要）。
+        <button class="small" id="soloClose">仮の相手を閉じる</button></p>
+      <div id="soloHolder"></div>
     </div>
     <div id="autoStatus" class="hint"></div>
     <ul class="steps" id="autoSteps"></ul>
@@ -121,6 +163,22 @@
       <button id="autoSaveJson">データを保存 (.json)</button>
       <span class="hint">結果はこの端末の「保存した結果」にも自動で残ります（参加者全員の端末にも共有）。</span>
     </div>
+  </section>
+
+  <!-- ===== Long run ===== -->
+  <section>
+    <h2>長時間テスト（ゲーム 1 回分の安定性）</h2>
+    <p class="hint">全員が 20 回/秒で送り合い続け、時間が経っても切れないか・遅くならないかを 1 分ごとに記録します。
+      終わるまで<b>全端末でこのページを前面に出したまま</b>にしてください（画面オフ・別アプリ・別タブは「途切れ」として記録されます）。結果は「保存した結果」に残り、参加者全員に共有されます。</p>
+    <div class="row">
+      <select id="ltDur"><option value="300">5 分</option><option value="600" selected>10 分</option><option value="1800">30 分</option><option value="3600">60 分</option></select>
+      <button class="primary" id="ltBtn" disabled>全員で開始</button>
+      <button id="ltStop" disabled>中止して集計</button>
+    </div>
+    <div id="ltStatus" class="hint"></div>
+    <div class="caps" id="ltSummary"></div>
+    <div class="scroll"><table id="ltTable"></table></div>
+    <p class="hint">経過（区間ごと）: <b class="ok">·</b> 良好 / <b class="warn">▲</b> 遅延・ロスあり（p95 100ms 以上、またはロス 3% 以上）/ <b class="ng">×</b> 不通。途切れ = 相手からの受信が 250ms 以上止まった回数。</p>
   </section>
 
   <!-- ===== History ===== -->
@@ -138,33 +196,6 @@
   </details>
 
   <h2 class="divider">プレイグラウンド（手動で試す）</h2>
-
-  <!-- ===== Sync status ===== -->
-  <section>
-    <h2>同期状況（全端末）</h2>
-    <div class="banner" id="syncBanner">ルームに参加してください</div>
-    <div id="whyBox" class="hint"></div>
-    <details id="helpBox">
-      <summary>相手が出てこない・つながらないとき</summary>
-      <ol class="hint">
-        <li><b>全員が同じ版のファイル</b>を使っているか（ページ上部の「版」が同じか）。古い版が混ざると見つからないことがあります。</li>
-        <li><b>ルーム名が全員同じ</b>か（「ルーム名をコピー」で渡すのが確実）。</li>
-        <li>上の帯に<b>「見つかりましたが、直接つながりません」</b>と出る場合: 同じ Wi-Fi でも、端末同士の通信が止められている・端末の場所（ローカル IP）が相手に伝わらない、のどちらかです。
-          <ul>
-            <li>まず下のボタンを<b>どちらか 1 台以上</b>で押す（マイクは使いません。許可するとブラウザがローカル IP を隠さなくなり、同じ LAN 内で直接つながりやすくなります。ローカル IP はルームの相手とシグナリングサーバーに伝わります）。</li>
-            <li>それでもだめなら、端末同士の通信そのものが止められています → TURN 中継が必要です（TESTING.md の 9）。</li>
-          </ul>
-        </li>
-      </ol>
-      <div class="row"><button id="lanBtn">LAN 内の直接接続を助ける（マイクの許可を求めます）</button><span class="hint" id="lanState"></span></div>
-    </details>
-    <div class="scroll"><table class="matrix" id="matrix"></table></div>
-    <p class="hint legend">
-      <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> 別ネットワークと直接（NAT越え・IPv6）</span><span><b class="warn">R</b> TURN中継</span>
-      <span>… 接続中</span><span><b class="ng">×</b> 失敗/再試行中</span><span>· 直接接続なし（他端末経由で同期）</span>
-    </p>
-    <p class="hint">各行は「その端末から見た」接続状況です。ハッシュが全員一致していれば共有データは同期しています。直接つながらない組み合わせがあっても、他の端末を経由して同期します。</p>
-  </section>
 
   <!-- ===== Shared state ===== -->
   <section>
@@ -200,22 +231,6 @@
     <div class="scroll"><table id="rtTable"></table></div>
     <p class="hint">判定の目安（高速モードの p95 とロス）: ◎ アクション可（&lt;50ms, ロス&lt;1%） / ○ 一般的なリアルタイム可（&lt;100ms, &lt;3%） / △ ロス多め（&lt;100ms だがロス 3% 以上 → 確実モードを使う） / △ ゆっくりした同期向け（&lt;200ms） / × ターン制向け。<br>
       p95 = 95% の通信がこの時間以内（たまに来る遅れを表す）。途切れ = 相手からの受信が 100ms 以上止まった回数。時計ずれ = 相手の時計 − 自分の時計（推定）。</p>
-  </section>
-
-  <!-- ===== Long run ===== -->
-  <section>
-    <h2>長時間テスト（ゲーム 1 回分の安定性）</h2>
-    <p class="hint">全員が 20 回/秒で送り合い続け、時間が経っても切れないか・遅くならないかを 1 分ごとに記録します。
-      終わるまで<b>全端末でこのページを前面に出したまま</b>にしてください（画面オフ・別アプリ・別タブは「途切れ」として記録されます）。結果は「保存した結果」に残り、参加者全員に共有されます。</p>
-    <div class="row">
-      <select id="ltDur"><option value="300">5 分</option><option value="600" selected>10 分</option><option value="1800">30 分</option><option value="3600">60 分</option></select>
-      <button class="primary" id="ltBtn" disabled>全員で開始</button>
-      <button id="ltStop" disabled>中止して集計</button>
-    </div>
-    <div id="ltStatus" class="hint"></div>
-    <div class="caps" id="ltSummary"></div>
-    <div class="scroll"><table id="ltTable"></table></div>
-    <p class="hint">経過（区間ごと）: <b class="ok">·</b> 良好 / <b class="warn">▲</b> 遅延・ロスあり（p95 100ms 以上、またはロス 3% 以上）/ <b class="ng">×</b> 不通。途切れ = 相手からの受信が 250ms 以上止まった回数。</p>
   </section>
 
   <!-- ===== Direct links ===== -->
@@ -329,7 +344,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17c';
+const BUILD = '2026-11-17d';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -407,7 +422,15 @@ $('cfgReset').onclick = () => { store.del('p2pt.cfg'); location.reload(); };
 // =====================================================================
 // Identity
 // =====================================================================
-const me = { id: 'p' + rand(9), name: CFG.name };
+// ?sub=1: this page is the stand-in partner of a one-device test, running in an iframe of the real page.
+const SUB = new URLSearchParams(location.search).get('sub') === '1';
+const me = { id: 'p' + rand(9), name: SUB ? cleanName(CFG.name).slice(0, 30) + '（仮の相手）' : CFG.name };
+if (SUB) {
+  document.body.classList.add('sub');
+  const note = document.createElement('div');
+  note.className = 'banner'; note.textContent = 'これは 1 台テスト用の「仮の相手」です。操作は不要です。';
+  document.querySelector('main').prepend(note);
+}
 me.color = colorOf(me.id);
 $('build').textContent = '版 ' + BUILD;
 $('myName').textContent = me.name;
@@ -565,6 +588,15 @@ function registerLink(L) {
       else keepNew = true; // same initiator: newer attempt replaces older
     }
     if (!keepNew) { L.closed = true; try { L.kind === 'peerjs' ? L.conn.close() : L._pc.close(); } catch {} return false; }
+    // A fresh attempt replaces one that has been trying for a while without ever opening: that one failed.
+    // (Two devices connecting to each other at the same moment also end up here, but then the old one is young.)
+    if (!ex.openedAt && ex.kind === 'peerjs' && L.kind === 'peerjs' && now() - ex.createdAt > 10000) {
+      const a = attempts.get(L.peerId) || { n: 0, next: 0 };
+      a.f = (a.f || 0) + 1;
+      attempts.set(L.peerId, a);
+      const why = diagReason(failDiag.get(L.peerId));
+      if (why && a.why !== why) { a.why = why; log(`接続できない理由 (${ex.name}): ${why}`, 'ng'); }
+    }
     ex.closed = true; ex.state = 'closed';
     try { ex.kind === 'peerjs' ? ex.conn.close() : ex._pc.close(); } catch {}
   }
@@ -795,7 +827,7 @@ function cleanStatus(m) {
     if (validId(id) && v && typeof v === 'object') ls[id] = { r: ROUTES.has(v.r) ? v.r : '-', rtt: num(v.rtt), n: num(v.n) };
   }
   return { t: 'st', id: m.id, sq: m.sq, name: cleanName(m.name), color: safeColor(m.color) || colorOf(m.id), beacon: !!m.beacon,
-    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16) };
+    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16), sub: !!m.sub };
 }
 function cleanRt(m) {
   const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), k: r.k === 'u' ? 'u' : 'r',
@@ -859,7 +891,7 @@ function linksView() {
 
 function myStatus() {
   return { t: 'st', id: me.id, sq: ++statusSeq, name: me.name, color: me.color, beacon: !!beaconPeer && beaconOpen,
-    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, ttl: 6 };
+    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, sub: SUB, ttl: 6 };
 }
 function sendStatus() {
   const s = JSON.stringify(myStatus());
@@ -2000,7 +2032,8 @@ function renderSteps() {
 function renderRemoteAuto() {
   const busy = remoteAuto && now() - remoteAuto.at < 40000;
   $('autoWho').textContent = busy ? `${remoteAuto.by} が自動テスト実行中: ${remoteAuto.text}` : '';
-  $('autoBtn').disabled = !!busy || !!(auto && auto.running) || ltRunning();
+  $('autoBtn').disabled = SUB || !!busy || !!(auto && auto.running) || ltRunning();
+  $('soloBtn').disabled = SUB || !!busy || !!(auto && auto.running) || ltRunning() || soloBusy;
 }
 setInterval(renderRemoteAuto, 2000);
 
@@ -2059,9 +2092,10 @@ async function runAuto() {
     M.participants = [me.name, ...onlineOthers().map(([, m]) => m.name)];
     const n = M.participants.length - 1;
     M.roomBusy = !n && roomBusy && !beaconOpen;
+    M.solo = n > 0 && onlineOthers().every(([, m]) => m.status && m.status.sub);
     if (M.roomBusy) stepEnd(st, 'fail', 'このルームには他の端末がいますが、接続できません（相手が古い版のファイルか、端末同士の通信が止められている可能性）→ 端末単体の項目のみ判定');
     else if (!n) stepEnd(st, 'skip', '他の端末がいません → 端末単体の項目のみ判定（同じルームに他の端末を入れて再実行すると全項目を判定します）');
-    else stepEnd(st, 'pass', `${n + 1} 台: ${M.participants.join(', ')}`);
+    else stepEnd(st, 'pass', M.solo ? '1 台テスト: この端末の中の仮の相手と接続（端末同士のネットワークは測れません）' : `${n + 1} 台: ${M.participants.join(', ')}`);
 
     if (n) {
       st = stepStart('直接接続（全組み合わせ）');
@@ -2156,7 +2190,7 @@ async function runAuto() {
     return;
   }
   const result = {
-    v: 1, build: BUILD, id: auto.id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: M.profile, by: me.name,
+    v: 1, build: BUILD, id: auto.id, ts: Date.now(), label: (M.solo ? '【1 台テスト】' : '') + $('autoLabel').value.trim(), solo: !!M.solo, profile: M.profile, by: me.name,
     device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
     room, participants: M.participants || [me.name],
     steps: auto.steps.map(x => ({ title: x.title, status: x.status, detail: maskIps(x.detail) })),
@@ -2174,6 +2208,37 @@ async function runAuto() {
   renderRemoteAuto();
 }
 $('autoBtn').onclick = () => { if (!autoBusy() && !ltRunning()) runAuto(); };
+
+// One-device test: a second copy of this page runs in an iframe and joins the same room, so every test can
+// run without another device. It proves the page, the browser and the signalling server work from here;
+// it says nothing about the network between two real devices, and the result is labelled accordingly.
+let soloFrame = null, soloBusy = false;
+const subPeers = () => onlineOthers().filter(([, m]) => m.status && m.status.sub);
+function soloClose() {
+  if (soloFrame) { soloFrame.remove(); soloFrame = null; }
+  $('soloBox').classList.add('hidden');
+}
+$('soloClose').onclick = soloClose;
+$('soloBtn').onclick = async () => {
+  if (SUB || autoBusy() || ltRunning() || soloBusy) return;
+  soloBusy = true; $('soloBtn').disabled = true;
+  try {
+    if (typeof Peer !== 'undefined' && !room) { joinRoom($('room').value.trim() || 'room-' + rand(6)); enableShared(true); }
+    $('autoStatus').textContent = '1 台テスト: 仮の相手を準備中…';
+    if (await waitFor(() => peer && peer.open, 15000)) {
+      if (!soloFrame) {
+        soloFrame = document.createElement('iframe');
+        soloFrame.title = '仮の相手';
+        soloFrame.src = location.href.split(/[?#]/)[0] + '?room=' + encodeURIComponent(room) + '&sub=1';
+        $('soloHolder').appendChild(soloFrame);
+        $('soloBox').classList.remove('hidden');
+      }
+      await waitFor(() => subPeers().some(([id]) => links.get(id) && links.get(id).isOpen), 20000);
+    }
+    if (!autoBusy()) await runAuto();
+  } finally { soloBusy = false; renderRemoteAuto(); }
+};
+if (SUB) { $('soloBtn').disabled = true; $('autoBtn').disabled = true; }
 
 // ---- judge: what can be used ----
 function deriveCaps(M) {
@@ -2241,6 +2306,18 @@ function deriveCaps(M) {
   add('long', '長時間の安定性（ゲーム 1 回分）', 'na', '自動テストは 1〜3 分のみ。「長時間テスト」で確認');
   add('bg', 'スマホのバックグラウンド・画面オフ中の動作', 'na', '自動では判定できません。プレイグラウンドのリアルタイムテスト中にアプリを切り替えて確認');
   add('av', '音声・ビデオ通話', 'na', 'このツールでは未検証（データ通信のみ）');
+  if (M.solo) { // everything measured against the stand-in partner stays "unverified": it never left this device
+    // ('wan' is left alone: without a real remote peer it only reflects this device's own STUN check, which is real)
+    const NET = new Set(['reach', 'lan', 'mesh', 'board', 'coop', 'action', 'bigdata', 'fast', 'file', 'recover', 'clock']);
+    const works = !!(M.mesh && M.mesh.pairs && M.mesh.ok === M.mesh.pairs && M.sync && M.sync.ok) && !C.some(c => NET.has(c.key) && c.status === 'ng');
+    for (const c of C) if (NET.has(c.key) && c.status !== 'na') {
+      c.reason = `1 台テストでは未検証（この端末の中では ${{ ok: '○', cond: '△', ng: '×' }[c.status]}: ${c.reason}）`;
+      c.status = 'na';
+    }
+    C.unshift({ key: 'solo', title: 'この端末でツール一式が動く（1 台テスト）', status: works ? 'ok' : 'ng',
+      reason: works ? 'ルームへの参加・接続・同期・計測がこの端末の中で動作。端末同士のネットワークは未検証 → 次は 2 台以上で自動テスト'
+        : 'この端末の中だけでも失敗した項目がある（手順の ❌ を確認）。ブラウザや管理ポリシーの制限の可能性' });
+  }
   return C;
 }
 const CAP_GROUPS = [['ok', '✅ 使える'], ['cond', '⚠️ 条件付きで使える'], ['ng', '❌ 使えない'], ['na', '❔ 未検証']];
@@ -2272,6 +2349,7 @@ function validResult(r) {
 }
 const loadHist = () => { const h = store.get(HKEY, []); return Array.isArray(h) ? h.filter(validResult) : []; };
 function saveResult(r) {
+  if (SUB) return; // the stand-in partner shares this browser's storage with the real page
   const h = loadHist().filter(x => x.id !== r.id);
   h.push(r);
   h.sort((a, b) => a.ts - b.ts);

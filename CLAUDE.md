@@ -34,7 +34,7 @@
     maxRetransmits:0）を追加し、メインの信頼チャネルと比較。開始 (`rtstart`) と結果 (`rtres`) はフラッディングで全員に配る。
   - 長時間テスト: `ltstart` をフラッディングし、各端末が 20 回/秒の `lp`/`lq` を相手ごとに送って区間（既定 60 秒）ごとに記録、
     結果 `ltres`（`cleanLt`）を集めて開始端末が `buildLongResult` で自動テストと同じ形式の結果にし、`autores` で共有・履歴保存する（判定キー `long` / `longdrop`）。
-    判定の閾値を変えたら TESTING.md の「8. 長時間テスト」の表も合わせる。
+    判定の閾値を変えたら TESTING.md の「3. 長時間テスト」の表も合わせる。
   - TURN は `turnCheck` が URL ごと（UDP / TCP / TLS）に中継のみのループバックで確認する。TURN の認証情報はコミットしない。
   - **他端末から届く値は信用しない。** メッセージは `handleMessage` で型・範囲を確認し、状態は `cleanStatus` / `cleanRt` / `validResult` を通してから保存・表示する。
     色は `safeColor`、文字列は `esc`/`txt` を必ず通す（`String(x)` は細工された値で例外になるので使わない）。新しいメッセージ種別を足すときも同じ。
@@ -45,6 +45,10 @@
   - つながらない理由: 開通しない接続は `sampleLinkDiag` が SDP の候補（種類・ローカル IP が隠れているか・公開アドレスが相手と同じか）と
     確認パケットの送受信数をまとめ、`diagReason` が文章にする。アドレスは比較するだけで保存・表示しない。
     分岐を足したら TESTING.md の「つながらない理由の読み方」も合わせる。
+  - 1 台テスト: `?sub=1` で開いたページ（`SUB`）が「仮の相手」になる。本体が iframe で同じルームに入れ、自動テストを流す（`soloBtn`）。
+    仮の相手は状態に `sub: true` を載せ、相手が全員 `sub` なら `M.solo`。このとき端末の外に出ていない判定（`NET` の項目）は必ず「未検証」に戻し、
+    代わりに判定キー `solo` を出す。1 台テストの結果を「ネットワークが使える」と読める形にしない。`SUB` は履歴を保存しない（保存先を本体と共有するため）。
+  - ページの並び: ルーム → 同期状況 → テスト（1 台テスト／自動テスト → 長時間テスト → 保存した結果）→ プレイグラウンド。TESTING.md も同じ順で書く。
   - `BUILD`（ページ上部の「版」）: 挙動を変えたら必ず更新する。写真や結果レポートからどの版かを判別するのに使う。
   - 診断を含め、IP アドレスは画面にも表示しない（利用者が画面の写真を共有するため）。
   - 「LAN 内の直接接続を助ける」は getUserMedia の許可でブラウザの mDNS によるローカル IP 隠しを外す（マイクは使わず即停止）。
@@ -73,12 +77,13 @@ Playwright で複数の browser context を開けば 3〜5 台構成を自動テ
 
 ```sh
 cd tests && npm install && npx playwright install chromium && npm test
-node e2e.js 窓口          # 名前に「窓口」を含むテストだけ
-SKIP_SLOW=1 npm test     # 自動テスト（約 1 分）を省略
+node e2e.js --list        # テストの一覧（分類ごと）
+node e2e.js 窓口          # テスト名か分類名に「窓口」を含むものだけ
+SKIP_SLOW=1 npm test     # 時間のかかる自動テスト系（各 40 秒前後）を省略
 CHROMIUM_PATH=/path/to/chromium npm test   # インストール済みの Chromium を使う
 ```
 
-`index.html` の挙動を変えたら、対応するテストを `tests/e2e.js` に足してから push する。
+`index.html` の挙動を変えたら、対応するテストを `tests/e2e.js` の当てはまる分類（`section(...)`）の中に足してから push する。
 
 端末同士の通信が塞がれた状態は、設定を `{ ice: [], relayOnly: true }` にすると再現できる（候補が 1 つも出ないので P2P だけが失敗する）。
 本物の公開サーバーでの確認は `node tests/real-server.js index.html`（手動用。CI では実行しない）。
