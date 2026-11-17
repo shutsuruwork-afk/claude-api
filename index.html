@@ -77,7 +77,7 @@
 </head>
 <body>
 <main>
-  <h1>P2P 接続テスト (WebRTC)</h1>
+  <h1>P2P 接続テスト (WebRTC) <small class="hint" id="build"></small></h1>
   <p class="lead">複数の端末で同じ「ルーム」に入り、全員が WebRTC で直接つながり、共有データが一致（同期）するかを確認します。</p>
 
   <!-- ===== Room ===== -->
@@ -143,6 +143,20 @@
   <section>
     <h2>同期状況（全端末）</h2>
     <div class="banner" id="syncBanner">ルームに参加してください</div>
+    <details id="helpBox">
+      <summary>相手が出てこない・つながらないとき</summary>
+      <ol class="hint">
+        <li><b>全員が同じ版のファイル</b>を使っているか（ページ上部の「版」が同じか）。古い版が混ざると見つからないことがあります。</li>
+        <li><b>ルーム名が全員同じ</b>か（「ルーム名をコピー」で渡すのが確実）。</li>
+        <li>上の帯に<b>「見つかりましたが、直接つながりません」</b>と出る場合: 同じ Wi-Fi でも、端末同士の通信が止められている・端末の場所（ローカル IP）が相手に伝わらない、のどちらかです。
+          <ul>
+            <li>まず下のボタンを<b>どちらか 1 台以上</b>で押す（マイクは使いません。許可するとブラウザがローカル IP を隠さなくなり、同じ LAN 内で直接つながりやすくなります。ローカル IP はルームの相手とシグナリングサーバーに伝わります）。</li>
+            <li>それでもだめなら、端末同士の通信そのものが止められています → TURN 中継が必要です（TESTING.md の 9）。</li>
+          </ul>
+        </li>
+      </ol>
+      <div class="row"><button id="lanBtn">LAN 内の直接接続を助ける（マイクの許可を求めます）</button><span class="hint" id="lanState"></span></div>
+    </details>
     <div class="scroll"><table class="matrix" id="matrix"></table></div>
     <p class="hint legend">
       <span><b class="ok">H</b> 同一LAN</span><span><b class="ok">S</b> 別ネットワークと直接（NAT越え・IPv6）</span><span><b class="warn">R</b> TURN中継</span>
@@ -312,6 +326,9 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // Utilities
 // =====================================================================
 const $ = id => document.getElementById(id);
+// Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
+// Bump it whenever the behaviour of this page changes.
+const BUILD = '2026-11-17a';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -391,6 +408,7 @@ $('cfgReset').onclick = () => { store.del('p2pt.cfg'); location.reload(); };
 // =====================================================================
 const me = { id: 'p' + rand(9), name: CFG.name };
 me.color = colorOf(me.id);
+$('build').textContent = '版 ' + BUILD;
 $('myName').textContent = me.name;
 $('myId').textContent = me.id;
 $('myDot').style.background = me.color;
@@ -518,6 +536,11 @@ class Link {
     pendingManual.delete(this);
     if (this.peerId && links.get(this.peerId) === this) {
       links.delete(this.peerId);
+      if (!this.openedAt && this.kind === 'peerjs' && reason !== 'bye') {
+        const a = attempts.get(this.peerId) || { n: 0, next: 0 };
+        a.f = (a.f || 0) + 1;
+        attempts.set(this.peerId, a);
+      }
       onLinkLost(this, reason);
     }
     try { this.kind === 'peerjs' ? this.conn.close() : (this._dc && this._dc.close(), this._pc && this._pc.close()); } catch {}
@@ -583,6 +606,7 @@ function onLinkLost(L, reason) {
 // =====================================================================
 const seenStatus = new Map(); // id -> last seq
 const seenBurst = new Set();
+const otherBuilds = new Set();
 
 function handleMessage(L, m) {
   switch (m.t) {
@@ -624,6 +648,10 @@ function handleMessage(L, m) {
       if ((seenStatus.get(m.id) || 0) >= m.sq) return;
       seenStatus.set(m.id, m.sq);
       const s = cleanStatus(m);
+      if (s.v !== BUILD && !otherBuilds.has(m.id)) {
+        otherBuilds.add(m.id);
+        log(`${s.name} は別の版（${s.v || '古い版'}）を使っています。全員が同じファイル（版 ${BUILD}）を使ってください`, 'warn');
+      }
       touchMember(m.id, { name: s.name, color: s.color, status: s });
       if (m.ttl > 0) { const fw = JSON.stringify(Object.assign({}, s, { ttl: Math.min(6, m.ttl) - 1 })); for (const o of links.values()) if (o !== L && o.isOpen) o.sendRaw(fw); }
       break;
@@ -714,7 +742,7 @@ function cleanStatus(m) {
     if (validId(id) && v && typeof v === 'object') ls[id] = { r: ROUTES.has(v.r) ? v.r : '-', rtt: num(v.rtt), n: num(v.n) };
   }
   return { t: 'st', id: m.id, sq: m.sq, name: cleanName(m.name), color: safeColor(m.color) || colorOf(m.id), beacon: !!m.beacon,
-    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n) };
+    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16) };
 }
 function cleanRt(m) {
   const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), k: r.k === 'u' ? 'u' : 'r',
@@ -741,24 +769,44 @@ const reconnectCount = new Map();
 const joinTargets = new Set();
 let statusSeq = 0;
 const ONLINE_MS = 9000;
+const SIG_MS = 45000; // a member known only through the signalling server (no P2P link yet) stays listed this long
+let roomBusy = false; // someone else holds the room beacon
 
 function touchMember(id, info) {
   const m = members.get(id) || { name: id, color: colorOf(id) };
-  const isNew = !members.has(id) || now() - m.rx > ONLINE_MS;
+  const isNew = !members.has(id) || !isOnline(m);
   Object.assign(m, info, { rx: now() });
   m.name = cleanName(m.name); m.color = safeColor(m.color) || colorOf(id);
   members.set(id, m);
   if (isNew) log(`メンバー: ${m.name} を認識`);
   scheduleRender();
 }
-const isOnline = m => now() - m.rx < ONLINE_MS;
+const isOnline = m => now() - m.rx < (m.status ? ONLINE_MS : SIG_MS);
+const isLive = m => !!m.status && now() - m.rx < ONLINE_MS; // actually exchanging data with the mesh
+// The signalling server delivered something from this device, so it is in the room even if no P2P link
+// can be made. Without this, a network that blocks device-to-device traffic looks like an empty room.
+function noteSignal(id, name) {
+  if (!validId(id) || id === me.id) return;
+  const m = members.get(id) || { name: id, color: colorOf(id), rx: 0 };
+  const fresh = !members.has(id) || !isOnline(m);
+  if (name != null && !m.status) m.name = cleanName(name);
+  m.rx = m.sigRx = now();
+  members.set(id, m);
+  if (fresh) log(`メンバー: ${m.name} を発見（シグナリング経由）`);
+  scheduleRender();
+}
+// ids we have first-hand evidence for (never relay second-hand ids: departed devices would circulate forever)
+const sigList = () => [...members].filter(([id, m]) => (links.get(id) && links.get(id).isOpen) || (m.sigRx && now() - m.sigRx < SIG_MS)).map(([id]) => id).slice(0, 32);
+function linksView() {
+  const ls = {};
+  for (const [id, L] of links) { const a = attempts.get(id); ls[id] = L.isOpen ? { r: L.route, rtt: L.rtt } : a && a.f ? { r: 'x', n: a.f } : { r: 'c', rtt: null }; }
+  for (const [id, a] of attempts) if (!ls[id] && (a.f || a.n) && members.has(id) && isOnline(members.get(id))) ls[id] = { r: 'x', n: a.f || a.n };
+  return ls;
+}
 
 function myStatus() {
-  const ls = {};
-  for (const [id, L] of links) ls[id] = { r: L.isOpen ? L.route : 'c', rtt: L.rtt };
-  for (const [id, a] of attempts) if (!ls[id]) ls[id] = { r: 'x', n: a.n };
   return { t: 'st', id: me.id, sq: ++statusSeq, name: me.name, color: me.color, beacon: !!beaconPeer && beaconOpen,
-    links: ls, h: stateHash(), n: ops.size, ttl: 6 };
+    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, ttl: 6 };
 }
 function sendStatus() {
   const s = JSON.stringify(myStatus());
@@ -801,7 +849,15 @@ function joinRoom(r) {
     tryClaimBeacon(true);
   });
   peer.on('connection', c => {
-    const L = new Link({ peerId: c.peer, kind: 'peerjs', initiator: (c.metadata && c.metadata.from) || c.peer, conn: c });
+    if (!validId(c.peer) || c.peer === me.id) { try { c.close(); } catch {} return; }
+    // The offer came through the signalling server: the sender is in the room, whatever happens to the P2P link.
+    const md = c.metadata && typeof c.metadata === 'object' ? c.metadata : {};
+    noteSignal(c.peer, md.name);
+    if (Array.isArray(md.list)) for (const e of md.list.slice(0, 32)) {
+      const [id, nm] = Array.isArray(e) ? e : [e];
+      if (validId(id) && id !== me.id && !members.has(id)) { members.set(id, { name: nm == null ? id : cleanName(nm), color: colorOf(id), rx: now() }); joinTargets.add(id); }
+    }
+    const L = new Link({ peerId: c.peer, kind: 'peerjs', initiator: c.peer, conn: c });
     bindConn(L);
   });
   peer.on('disconnected', () => {
@@ -830,11 +886,19 @@ function tryClaimBeacon(queryIfTaken) {
   const bid = beaconIdOf(room);
   const bp = beaconPeer = new Peer(bid, peerOpts());
   bp.on('open', () => {
-    beaconOpen = true; lastBeaconSeen = now(); setRole();
+    beaconOpen = true; roomBusy = false; lastBeaconSeen = now(); setRole();
     log('ルーム窓口を引き受けました（新しく来た人に参加者一覧を渡す役）');
     sendStatus();
   });
   bp.on('connection', c => {
+    // The joiner is known as soon as its offer arrives through the signalling server. If the list cannot be
+    // delivered over P2P (device-to-device traffic blocked), contact the joiner ourselves so that both sides
+    // at least see each other and can report *why* they are not connected.
+    const from = c.peer;
+    if (validId(from) && from !== me.id) {
+      noteSignal(from, c.metadata && c.metadata.name);
+      setTimeout(() => { const L = links.get(from); if (room && !(L && !L.closed)) { joinTargets.add(from); meshTick(); } }, 1500);
+    }
     // Browsers occasionally drop a message that the answering side sends at the very moment the channel
     // opens (seen in Chromium: the connection is fine, only that first message is lost). So the list is
     // sent at open (for older copies of this page) and again whenever the joiner asks for it.
@@ -849,6 +913,7 @@ function tryClaimBeacon(queryIfTaken) {
   bp.on('error', e => {
     if (beaconPeer !== bp) return;
     if (e.type === 'unavailable-id') {
+      roomBusy = true;
       beaconPeer = null; beaconOpen = false; setRole();
       try { bp.destroy(); } catch {}
       // Someone we may not be connected to holds the beacon (e.g. the old holder reloaded and
@@ -866,7 +931,7 @@ function releaseBeacon() {
 function queryBeacon() {
   if (!peer || !peer.open) return;
   lastBeaconQuery = now();
-  const c = peer.connect(beaconIdOf(room), { serialization: 'raw', metadata: { from: me.id, q: 1 } });
+  const c = peer.connect(beaconIdOf(room), { serialization: 'raw', metadata: { from: me.id, name: me.name, q: 1 } });
   if (!c) return;
   let answered = false;
   // no answer (e.g. the list was lost, see tryClaimBeacon): ask again soon instead of waiting for the 10 s check
@@ -889,7 +954,7 @@ function queryBeacon() {
 }
 
 function connectTo(id) {
-  const c = peer.connect(id, { serialization: 'raw', reliable: true, metadata: { from: me.id } });
+  const c = peer.connect(id, { serialization: 'raw', reliable: true, metadata: { from: me.id, name: me.name, list: sigList().filter(x => x !== id).map(x => [x, members.get(x).name]) } });
   if (!c) return;
   const L = new Link({ peerId: id, kind: 'peerjs', initiator: me.id, conn: c });
   bindConn(L);
@@ -901,13 +966,14 @@ function bindConn(L) {
   c.on('data', d => L.onData(d));
   c.on('close', () => L.onClose('close'));
   c.on('error', e => log(`接続エラー (${L.name}): ${e.type || ''} ${e.message || e}`, 'warn'));
+  watchPc(L);
   const iv = setInterval(() => { if (L.pc) { clearInterval(iv); watchPc(L); } if (L.closed) clearInterval(iv); }, 50);
 }
 
 function meshTick() {
   const t = now();
   // stale members
-  for (const [id, m] of members) if (t - m.rx > 60000 && !links.has(id)) members.delete(id);
+  for (const [id, m] of members) if (t - m.rx > 60000 && !links.has(id)) { members.delete(id); attempts.delete(id); }
   // connection timeouts and ICE watchdog
   for (const L of [...links.values(), ...pendingManual]) {
     if (!L.isOpen && t - L.createdAt > 20000 && L.kind === 'peerjs') L.close('タイムアウト');
@@ -935,8 +1001,8 @@ function meshTick() {
     connectTo(id);
   }
   // beacon takeover: if nobody holds it, the smallest online id claims it
-  const online = [me.id, ...[...members].filter(([, m]) => isOnline(m)).map(([id]) => id)];
-  if ([...members.values()].some(m => isOnline(m) && m.status && m.status.beacon)) lastBeaconSeen = t;
+  const online = [me.id, ...[...members].filter(([, m]) => isLive(m)).map(([id]) => id)];
+  if ([...members.values()].some(m => isLive(m) && m.status.beacon)) lastBeaconSeen = t;
   if (beaconOpen) lastBeaconSeen = t;
   if (!beaconPeer && t - lastBeaconSeen > 8000 && t - lastClaimTry > 5000 && online.sort()[0] === me.id) tryClaimBeacon(false);
   // isolated? ask the room again
@@ -952,7 +1018,7 @@ function leaveRoom() {
     for (const L of [...links.values()]) L.close('bye');
     releaseBeacon();
     if (peer) { try { peer.destroy(); } catch {} peer = null; }
-    room = null; members.clear(); attempts.clear(); lostTimes.clear(); joinTargets.clear();
+    room = null; roomBusy = false; members.clear(); attempts.clear(); lostTimes.clear(); joinTargets.clear();
     setSig('未接続'); setRole();
     $('joinBtn').disabled = false; $('leaveBtn').disabled = true; $('room').disabled = false;
     enableShared(false); scheduleRender();
@@ -972,6 +1038,8 @@ function watchPc(L) {
   const pc = L.pc;
   if (!pc || pc.__watched) return;
   pc.__watched = true;
+  // our offer was answered => the other device is reachable through the signalling server
+  pc.addEventListener('signalingstatechange', () => { if (pc.signalingState === 'stable' && L.initiator === me.id && L.peerId && !L.isOpen) noteSignal(L.peerId); });
   pc.addEventListener('iceconnectionstatechange', () => {
     const s = pc.iceConnectionState;
     if (s === 'failed') log(`ICE 失敗 (${L.name}): 直接接続できません。TURN が必要な可能性があります`, 'ng');
@@ -1396,7 +1464,7 @@ function buildLongResult(id) {
   const steps = rows.slice(0, 58).map(r => ({ title: `${r.from} → ${r.to}`, status: r.lost ? 'fail' : r.drops || r.bad || r.maxGap > 1000 ? 'warn' : 'pass',
     detail: `受信率 ${r.loss != null ? (100 - r.loss).toFixed(1) : '-'}% / p95 ${f0(r.p95)}ms / 最大 ${f0(r.max)}ms / 途切れ ${r.stalls} 回（最大 ${f0(r.maxGap)}ms）/ 切断 ${r.drops} 回（不通 ${(r.downMs / 1000).toFixed(1)} 秒）/ 経過 ${r.tl.replace(/\./g, '·').replace(/\^/g, '▲').replace(/x/g, '×')}` }));
   return JSON.parse(maskIps(JSON.stringify({
-    v: 1, id: 'L' + id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: 'long', by: me.name,
+    v: 1, build: BUILD, id: 'L' + id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: 'long', by: me.name,
     device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
     room, participants: [me.name, ...res.filter(x => x.from !== me.id).map(x => x.name)], steps, caps,
     metrics: { long: { dur, devices: res.length, p95, loss, maxGap: gap, badFrac, lost, dropped, bg: bgs, missing, rows } },
@@ -1485,20 +1553,28 @@ async function speedTest(L, mbArg) {
 // =====================================================================
 // Diagnostics
 // =====================================================================
-// Gathers ICE candidates with the configured servers. Returned object has no IP addresses
-// except `addrs`, which is only shown on this screen.
+// Gathers ICE candidates with the configured servers. The returned object has no IP addresses:
+// people photograph and share this screen, so addresses are not shown anywhere.
 async function runDiag() {
   const servers = CFG.ice;
   const stunCount = servers.reduce((n, s) => n + [].concat(s.urls).filter(u => /^stuns?:/.test(u)).length, 0);
   const hasTurn = servers.some(s => [].concat(s.urls).some(u => /^turns?:/.test(u)));
   const pc = new RTCPeerConnection({ iceServers: servers });
   const cands = [], errors = [];
-  pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate); };
+  let lastCand = 0;
+  pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) { cands.push(e.candidate); lastCand = now(); } };
   pc.onicecandidateerror = e => errors.push(`${e.url || ''} ${e.errorCode} ${e.errorText || ''}`.trim());
   pc.createDataChannel('diag');
   const t0 = now();
   await pc.setLocalDescription(await pc.createOffer());
-  await new Promise(r => { const f = () => pc.iceGatheringState === 'complete' && r(); pc.onicegatheringstatechange = f; setTimeout(r, 8000); });
+  // Done when gathering completes. With hidden local addresses (mDNS) browsers may never report completion,
+  // so also stop once no new candidate has arrived for 3 s (at most 8 s in total).
+  await new Promise(r => {
+    const iv = setInterval(() => {
+      const t = now();
+      if (pc.iceGatheringState === 'complete' || t - t0 > 8000 || (lastCand && t - lastCand > 3000)) { clearInterval(iv); r(); }
+    }, 100);
+  });
   const ms = now() - t0;
   pc.close();
   const typ = c => (c.candidate.match(/ typ (\w+)/) || [])[1];
@@ -1514,7 +1590,7 @@ async function runDiag() {
   const symmetric = [...byBase.values()].some(x => x.size > 1);
   return { ms: Math.round(ms), stunCount, hasTurn, host: host.length, srflx: srflx.length, relay: relay.length, symmetric,
     natKnown: stunCount >= 2, v6: srflx.some(c => addrOf(c).includes(':')), errors: errors.slice(0, 5).map(maskIps),
-    addrs: [...new Set(srflx.map(c => addrOf(c) + ':' + portOf(c)))] };
+    hostHidden: host.length > 0 && host.every(c => /\.local$/i.test(addrOf(c) || '')) };
 }
 function natText(d) {
   if (!d.stunCount) return 'STUN 未設定（同じネットワーク内のみ）';
@@ -1524,19 +1600,38 @@ function natText(d) {
 }
 $('diagBtn').onclick = async () => {
   const out = $('diagOut');
-  out.innerHTML = '<dt>状態</dt><dd>候補を収集中…（最大 8 秒）</dd>';
+  out.innerHTML = '<dt>状態</dt><dd>候補を収集中…（数秒かかります）</dd>';
   const d = await runDiag();
   const cls = !d.stunCount ? '' : !d.srflx ? 'ng' : d.symmetric ? 'warn' : 'ok';
   out.innerHTML = `
     <dt>収集時間</dt><dd>${(d.ms / 1000).toFixed(1)} 秒</dd>
-    <dt>host 候補</dt><dd>${d.host} 件</dd>
-    <dt>srflx 候補</dt><dd>${d.srflx} 件 ${esc(d.addrs.join(', '))}</dd>
+    <dt>host 候補</dt><dd>${d.host} 件（ローカル IP: ${!d.host ? '-' : d.hostHidden ? '相手に非公開。同じ LAN でつながらないときは「LAN 内の直接接続を助ける」を試す' : '相手に伝わる'}）</dd>
+    <dt>srflx 候補</dt><dd>${d.srflx} 件</dd>
     <dt>NAT 判定</dt><dd class="${cls}">${esc(natText(d))}</dd>
     <dt>IPv6 グローバル</dt><dd>${d.v6 ? 'あり' : 'なし'}</dd>
     <dt>TURN</dt><dd>${!d.hasTurn ? '未設定' : d.relay ? `<span class="ok">OK（relay 候補 ${d.relay} 件）</span>` : '<span class="ng">relay 候補なし（URL・認証情報を確認）</span>'}</dd>
     ${d.errors.length ? `<dt>エラー</dt><dd class="warn">${esc(d.errors.join(' / '))}</dd>` : ''}`;
-  lastDiag = `NAT=${natText(d)} / host候補=${d.host} / srflx候補=${d.srflx} / IPv6=${d.v6 ? 'あり' : 'なし'} / TURN=${!d.hasTurn ? '未設定' : d.relay ? 'OK' : 'relay候補なし'} / 収集${(d.ms / 1000).toFixed(1)}秒` + (d.errors.length ? ` / エラー: ${d.errors.join(' ; ')}` : '');
+  lastDiag = `NAT=${natText(d)} / host候補=${d.host}${d.host ? (d.hostHidden ? '(ローカルIP非公開)' : '(ローカルIP公開)') : ''} / srflx候補=${d.srflx} / IPv6=${d.v6 ? 'あり' : 'なし'} / TURN=${!d.hasTurn ? '未設定' : d.relay ? 'OK' : 'relay候補なし'} / 収集${(d.ms / 1000).toFixed(1)}秒` + (d.errors.length ? ` / エラー: ${d.errors.join(' ; ')}` : '');
   log('ネットワーク診断: ' + lastDiag);
+};
+
+let lanAssist = false;
+$('lanBtn').onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(t => t.stop()); // the microphone itself is not used
+  } catch (e) {
+    $('lanState').textContent = '許可されませんでした';
+    log(`マイクの許可が得られませんでした（${e.name}）。端末の設定や管理ポリシーで禁止されている場合、この方法は使えません`, 'warn');
+    return;
+  }
+  lanAssist = true;
+  $('lanState').textContent = '有効（このページを開いている間）';
+  log('ローカル IP を相手に伝えるようにしました。つながっていない相手に接続し直します', 'ok');
+  for (const L of [...links.values()]) if (!L.isOpen && L.kind === 'peerjs') L.close('再試行');
+  for (const a of attempts.values()) a.next = 0;
+  for (const id of members.keys()) joinTargets.add(id);
+  meshTick();
 };
 
 // =====================================================================
@@ -1678,17 +1773,22 @@ function render() {
   const banner = $('syncBanner');
   if (!room && !links.size) { banner.className = 'banner'; banner.textContent = 'ルームに参加してください'; }
   else if (!onlineOthers.length && room && !(peer && peer.open)) { banner.className = 'banner ng'; banner.textContent = 'シグナリングサーバーに接続できていません（ログを確認。手動モードなら接続可能）'; }
+  else if (!onlineOthers.length && roomBusy && !beaconOpen) { banner.className = 'banner ng'; banner.textContent = `ルーム「${room || ''}」には他の端末がいますが、接続できていません（相手が古い版のファイルか、端末同士の通信が止められている可能性。下の「相手が出てこない・つながらないとき」を参照）`; }
   else if (!onlineOthers.length) { banner.className = 'banner warn'; banner.textContent = `自分だけです。他の端末で同じルーム「${room || ''}」に参加してください`; }
   else {
     const mismatch = onlineOthers.filter(([, m]) => !m.status || m.status.h !== myH);
     const direct = onlineOthers.filter(([id]) => links.get(id) && links.get(id).isOpen).length;
-    if (mismatch.length) { banner.className = 'banner warn'; banner.textContent = `${onlineOthers.length + 1} 台中 ${mismatch.length} 台が同期中/不一致（${mismatch.map(([, m]) => m.name).join(', ')}）`; }
+    const unreach = onlineOthers.filter(([id, m]) => !m.status && !(links.get(id) && links.get(id).isOpen));
+    const failing = unreach.filter(([id]) => (attempts.get(id) || {}).f);
+    if (failing.length && !direct) { banner.className = 'banner ng'; banner.textContent = `相手（${failing.map(([, m]) => m.name).join(', ')}）は見つかりましたが、直接つながりません。端末同士の通信がネットワークで止められている可能性があります（下の「相手が出てこない・つながらないとき」を参照）`; $('helpBox').open = true; }
+    else if (unreach.length && !direct) { banner.className = 'banner warn'; banner.textContent = `相手（${unreach.map(([, m]) => m.name).join(', ')}）を見つけました。接続中…`; }
+    else if (mismatch.length) { banner.className = 'banner warn'; banner.textContent = `${onlineOthers.length + 1} 台中 ${mismatch.length} 台が同期中/不一致（${mismatch.map(([, m]) => m.name).join(', ')}）`; }
     else { banner.className = 'banner ok'; banner.textContent = `✅ ${onlineOthers.length + 1} 台すべて同期済み（直接接続 ${direct}/${onlineOthers.length}）`; }
   }
   // links table
   let lh = '<tr><th>相手</th><th>方式</th><th>状態</th><th>経路</th><th>RTT</th><th>再接続</th><th>速度</th><th></th></tr>';
   const all = [...links.values()];
-  for (const [id, a] of attempts) if (!links.has(id)) all.push({ peerId: id, name: (members.get(id) || {}).name || id, kind: 'peerjs', state: `再試行待ち (${a.n}回失敗)`, attemptOnly: true });
+  for (const [id, a] of attempts) if (!links.has(id) && (a.f || a.n)) all.push({ peerId: id, name: (members.get(id) || {}).name || id, kind: 'peerjs', state: `再試行待ち (${a.f || a.n}回失敗)`, attemptOnly: true });
   if (!all.length) lh += '<tr><td colspan="8" class="hint">まだ接続はありません</td></tr>';
   for (const L of all) {
     const stCls = L.isOpen ? 'ok' : L.attemptOnly ? 'ng' : '';
@@ -1760,12 +1860,7 @@ async function turnCheck() {
   return { ok: good.length > 0, ms: good.length ? Math.min(...good.map(x => x.ms)) : null, per };
 }
 const turnText = t => t.per.map(x => `${x.label} ${x.ok ? '○ ' + x.ms + 'ms' : '×'}`).join(' / ');
-function myLinksView() {
-  const ls = {};
-  for (const [id, L] of links) ls[id] = { r: L.isOpen ? L.route : 'c', rtt: L.rtt };
-  for (const [id, a] of attempts) if (!ls[id]) ls[id] = { r: 'x', n: a.n };
-  return ls;
-}
+const myLinksView = () => linksView();
 const onlineOthers = () => [...members.entries()].filter(([, m]) => isOnline(m));
 // Classify every pair of devices in the room using each side's reported links.
 function meshSummary() {
@@ -1866,8 +1961,8 @@ async function runAuto() {
 
     st = stepStart('STUN（別ネットワークと直接つなぐ準備・UDP）');
     const d = await runDiag();
-    M.diag = Object.assign({}, d); delete M.diag.addrs;
-    stepEnd(st, !d.stunCount ? 'skip' : !d.srflx ? 'fail' : d.symmetric ? 'warn' : 'pass', natText(d) + `（host ${d.host} / srflx ${d.srflx}${d.v6 ? ' / IPv6 あり' : ''}）`);
+    M.diag = Object.assign({}, d);
+    stepEnd(st, !d.stunCount ? 'skip' : !d.srflx ? 'fail' : d.symmetric ? 'warn' : 'pass', natText(d) + `（host ${d.host}${d.hostHidden ? '・ローカル IP 非公開' : ''} / srflx ${d.srflx}${d.v6 ? ' / IPv6 あり' : ''}）`);
 
     st = stepStart('TURN 中継（直接つながらない時の保険）');
     if (!d.hasTurn) { M.turn = null; stepEnd(st, 'skip', '未設定（「設定」で TURN サーバーを入れると判定します）'); }
@@ -1883,15 +1978,23 @@ async function runAuto() {
     if (M.signal && M.signal.ok) await waitFor(() => onlineOthers().length > 0, 6000);
     M.participants = [me.name, ...onlineOthers().map(([, m]) => m.name)];
     const n = M.participants.length - 1;
-    if (!n) stepEnd(st, 'skip', '他の端末がいません → 端末単体の項目のみ判定（同じルームに他の端末を入れて再実行すると全項目を判定します）');
+    M.roomBusy = !n && roomBusy && !beaconOpen;
+    if (M.roomBusy) stepEnd(st, 'fail', 'このルームには他の端末がいますが、接続できません（相手が古い版のファイルか、端末同士の通信が止められている可能性）→ 端末単体の項目のみ判定');
+    else if (!n) stepEnd(st, 'skip', '他の端末がいません → 端末単体の項目のみ判定（同じルームに他の端末を入れて再実行すると全項目を判定します）');
     else stepEnd(st, 'pass', `${n + 1} 台: ${M.participants.join(', ')}`);
 
     if (n) {
       st = stepStart('直接接続（全組み合わせ）');
-      await waitFor(() => meshSummary().pending === 0, 20000, 500);
+      await waitFor(() => meshSummary().pending === 0, 25000, 500);
       const ms = M.mesh = meshSummary();
       stepEnd(st, ms.ok === ms.pairs ? 'pass' : ms.ok ? 'warn' : 'fail',
-        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : ''));
+        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') +
+        (ms.ok ? '' : '｜相手は見つかるのに端末同士の通信が通りません（Wi-Fi の端末間通信の禁止・ローカル IP が伝わらない等）。「相手が出てこない・つながらないとき」を参照'));
+
+      if (!ms.ok) {
+        st = stepStart('同期・リアルタイム・速度・自動復帰のテスト');
+        stepEnd(st, 'skip', '直接つながった相手がいないため省略');
+      } else {
 
       st = stepStart(`共有データの同期（全員が同時に ${prof.burst} 回書き込み）`);
       const bm = { t: 'burst', bid: rand(8), n: prof.burst, from: me.id, fromName: me.name };
@@ -1955,13 +2058,14 @@ async function runAuto() {
       const off = M.rt30 && M.rt30.off;
       M.clock = off;
       stepEnd(st, off == null ? 'skip' : off < 20 ? 'pass' : 'warn', off == null ? '計測できず' : `最大 ${f0(off)}ms` + (off < 20 ? '（そのまま使える）' : '（ゲームでは時計の補正が必要）'));
+      }
     }
   } catch (e) {
     if (st && st.status === 'run') stepEnd(st, 'fail', 'エラー: ' + e.message);
     log('自動テスト中断: ' + e.message, 'ng');
   }
   const result = {
-    v: 1, id: auto.id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: M.profile, by: me.name,
+    v: 1, build: BUILD, id: auto.id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: M.profile, by: me.name,
     device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
     room, participants: M.participants || [me.name],
     steps: auto.steps.map(x => ({ title: x.title, status: x.status, detail: maskIps(x.detail) })),
@@ -1995,6 +2099,13 @@ function deriveCaps(M) {
   add('manual', 'サーバーなし接続（手動コピペ）', manualOpen ? 'ok' : lb ? 'cond' : 'ng',
     manualOpen ? '手動接続で通信できている' : lb ? '同じネットワーク内なら使える見込み（2 台ずつ・文字列のやり取りが必要）' : 'WebRTC が動かない');
   const ms = M.mesh;
+  const REACH = '相手の端末との直接接続（P2P）';
+  if (ms && ms.pairs) add('reach', REACH, ms.ok === ms.pairs ? 'ok' : ms.ok ? 'cond' : 'ng',
+    ms.ok === ms.pairs ? `${ms.pairs} 組すべて直接接続` : ms.ok ? `${ms.pairs} 組中 ${ms.ok} 組。つながらない: ${ms.failed.join(', ')}`
+      : '相手は見つかったが、どの組も直接つながらない → 端末同士の通信が止められている可能性。「LAN 内の直接接続を助ける」か TURN 中継が必要');
+  else if (M.roomBusy) add('reach', REACH, 'ng', 'ルームに他の端末がいるのに接続できない（相手が古い版のファイル、または端末同士の通信が止められている）');
+  else add('reach', REACH, 'na', '相手がいないため未検証');
+  const np = ms && ms.pairs && !ms.ok ? '相手と直接つながらないため未検証' : '相手がいないため未検証';
   add('lan', '同じネットワーク内の端末と直接接続', ms && ms.H ? 'ok' : 'na', ms && ms.H ? `同一LAN の組 ${ms.H} 組で直接接続` : '同じネットワーク内の相手とは未検証');
   const d = M.diag;
   if (ms && ms.S) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ok', `別ネットワークの組 ${ms.S} 組で直接接続`);
@@ -2008,9 +2119,9 @@ function deriveCaps(M) {
     ms.ok === ms.pairs ? `${peers + 1} 台が全員と直接接続` : M.sync && M.sync.ok ? `一部の組（${ms.failed.join(', ')}）は他の端末経由で同期` : '直接つながらない組があり同期も不完全');
   else add('mesh', '3 台以上の同時接続', 'na', `${peers + 1} 台でのテストのため未検証（3 台以上で再実行を）`);
   if (M.sync) add('board', '共有ボード・チャット・ターン制ゲーム', M.sync.ok ? 'ok' : 'ng', M.sync.ok ? `同時書き込みが完了から ${M.sync.sec} 秒で全員一致` : '同期が完了しない');
-  else add('board', '共有ボード・チャット・ターン制ゲーム', 'na', '相手がいないため未検証');
+  else add('board', '共有ボード・チャット・ターン制ゲーム', 'na', np);
   const rtCap = (key, title, res, strict) => {
-    if (!res) return add(key, title, 'na', '相手がいないため未検証');
+    if (!res) return add(key, title, 'na', np);
     const v = rtVerdictOf(res);
     const base = res.u && !res.fastNA ? res.u : res.r;
     const ev = base ? `p95 ${f0(base.p95)}ms・ロス ${base.loss.toFixed(1)}%（最悪の組）` : '結果なし';
@@ -2029,7 +2140,7 @@ function deriveCaps(M) {
   if (M.speed && M.speed.length) {
     const mn = Math.min(...M.speed.map(x => x.mbps || 0));
     add('file', '画像・ファイルの共有', mn >= 5 ? 'ok' : mn >= 1 ? 'cond' : 'ng', `最低 ${mn.toFixed(1)} Mbps` + (mn >= 5 ? '' : mn >= 1 ? '（小さい画像なら可）' : ''));
-  } else add('file', '画像・ファイルの共有', 'na', '相手がいないため未検証');
+  } else add('file', '画像・ファイルの共有', 'na', np);
   if (M.reconnect) {
     const t = M.reconnect.times, ok = t.length && t.every(x => x != null), w = ok ? Math.max(...t) : null;
     add('recover', '切断からの自動復帰', !ok ? 'ng' : w <= 5000 ? 'ok' : 'cond', ok ? `最大 ${(w / 1000).toFixed(1)} 秒で復帰` : '復帰しなかった');
@@ -2094,7 +2205,7 @@ function toMarkdown(r) {
     L.push(`## ${title}`, '', ...items.map(c => `- **${c.title}** — ${c.reason}`), '');
   }
   L.push('## テスト手順と結果', '', ...r.steps.map(x => `- ${ICON[x.status]} ${x.title}${x.detail ? ' — ' + x.detail : ''}`), '');
-  L.push(`端末: ${r.device.ua}`);
+  L.push(`端末: ${r.device.ua}`, `版: ${txt(r.build) || '(古い版)'}`);
   return maskIps(L.join('\n'));
 }
 $('autoSaveMd').onclick = () => lastResult && download(`p2p-test-${stamp(lastResult.ts)}.md`, toMarkdown(lastResult), 'text/markdown');
@@ -2161,6 +2272,7 @@ function buildReport() {
   const d = new Date();
   L.push(`# P2P テスト結果 ${d.toLocaleString()}`);
   L.push(`端末: ${me.name} / ${navigator.userAgent}`);
+  L.push(`版: ${BUILD}`);
   L.push(`ページ: ${location.protocol === 'file:' ? 'ローカルファイル' : location.origin + location.pathname}`);
   L.push(`ルーム: ${room || '(未参加)'} / シグナリング: ${$('sigState').textContent} / 役割: ${$('roleState').textContent}`);
   L.push(`シグナリングサーバー: ${CFG.server ? CFG.server.host + ':' + (CFG.server.port || '') + (CFG.server.path || '') : '0.peerjs.com (既定)'}`);

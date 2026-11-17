@@ -131,6 +131,68 @@ test('窓口の端末が抜けたら残りが窓口を引き継ぎ、新規参�
   await waitSynced([B, C, D], 3, 30000);
 });
 
+// 端末同士の通信が塞がれた状態: 中継のみ + TURN なし = 候補が 1 つも出ないので P2P は絶対につながらない（シグナリングは通る）
+const BLOCKED = { ice: [], relayOnly: true };
+const names = p => p.evaluate(() => [...members.values()].map(m => m.name).sort().join(','));
+
+test('直接通信が塞がれていても相手を発見し、理由を表示する（3 台）', async () => {
+  const room = newRoom();
+  const A = await open('A', { room, cfg: BLOCKED });
+  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  const B = await open('B', { room, cfg: BLOCKED });
+  for (const p of [A, B]) await p.waitForFunction(() => members.size === 1, null, { timeout: 10000 });
+  assert.match(await banner(B), /を見つけました。接続中|直接つながりません/);
+  const C = await open('C', { room, cfg: BLOCKED });
+  for (const p of [A, B, C]) await p.waitForFunction(() => members.size === 2, null, { timeout: 15000 });
+  assert.deepStrictEqual([await names(A), await names(B), await names(C)], ['B,C', 'A,C', 'A,B']);
+  for (const p of [A, B, C]) {
+    await p.waitForFunction(() => /見つかりましたが、直接つながりません/.test(document.querySelector('#syncBanner').textContent) && document.querySelector('#helpBox').open, null, { timeout: 40000 });
+    assert.ok((await p.evaluate(() => document.querySelector('#matrix').innerText)).includes('×'));
+  }
+});
+
+test('直接通信が塞がれていると、自動テストは「相手は見つかったがつながらない」と判定する', async () => {
+  const room = newRoom();
+  const A = await open('A', { room, cfg: BLOCKED });
+  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  const B = await open('B', { room, cfg: BLOCKED });
+  await B.waitForFunction(() => members.size === 1, null, { timeout: 10000 });
+  await B.click('#autoBtn');
+  await B.waitForFunction(() => auto && !auto.running && lastResult, null, { timeout: 90000 });
+  const r = await B.evaluate(() => lastResult);
+  const info = JSON.stringify(r.steps, null, 1);
+  assert.deepStrictEqual(r.participants, ['B', 'A']);
+  assert.strictEqual(r.caps.find(c => c.key === 'reach').status, 'ng', info);
+  assert.strictEqual(r.caps.find(c => c.key === 'webrtc').status, 'ok');
+  assert.strictEqual(r.caps.find(c => c.key === 'room').status, 'ok');
+  assert.ok(r.steps.some(x => x.status === 'fail' && /直接つながらない: /.test(x.detail)), info);
+  assert.ok(r.steps.some(x => x.status === 'skip' && /省略/.test(x.detail)), info);
+  assert.ok(r.build);
+});
+
+test('窓口が古い版で応答しなくても「ルームに他の端末がいる」と表示する', async () => {
+  const room = newRoom();
+  const A = await open('A', { room, cfg: BLOCKED });
+  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  await A.evaluate(() => { peer.connect = () => undefined; }); // 古い版と同じく、窓口側からは接続しに行かない
+  const B = await open('B', { room, cfg: BLOCKED });
+  await B.waitForFunction(() => /他の端末がいますが、接続できていません/.test(document.querySelector('#syncBanner').textContent), null, { timeout: 10000 });
+});
+
+test('「LAN 内の直接接続を助ける」でローカル IP が相手に伝わるようになる', async () => {
+  const p = await open('L');
+  const hidden = () => p.evaluate(async () => (await runDiag()).hostHidden);
+  assert.strictEqual(await hidden(), true);
+  await p.context().grantPermissions(['microphone']);
+  await p.click('#helpBox > summary'); await p.click('#lanBtn');
+  await p.waitForFunction(() => /有効/.test(document.querySelector('#lanState').textContent), null, { timeout: 10000 });
+  assert.strictEqual(await hidden(), false);
+  await p.evaluate(() => { document.querySelector('#diagBtn').closest('details').open = true; });
+  await p.click('#diagBtn');
+  await p.waitForFunction(() => /NAT 判定/.test(document.querySelector('#diagOut').textContent), null, { timeout: 15000 });
+  assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(await p.textContent('#diagOut')), '診断画面に IP が出ている');
+});
+
 test('日本語のルーム名で接続でき、別の名前とは混ざらない', async () => {
   const s = Date.now().toString(36);
   const A = await open('A', { room: '会議室' + s });
@@ -300,7 +362,8 @@ test('自動テスト（クイック）が 3 台で完走し、結果が全員�
   const filter = process.argv[2];
   PeerServer({ port: SIG, host: '127.0.0.1', path: '/' });
   http.createServer((q, res) => { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(fs.readFileSync(FILE)); }).listen(WEB, '127.0.0.1');
-  browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}); // 既存の Chromium を使う場合に指定
+  browser = await chromium.launch(Object.assign({ args: ['--use-fake-device-for-media-stream'] }, // マイク許可のテスト用（実機のマイクは使わない）
+    process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {})); // 既存の Chromium を使う場合に指定
   let failed = 0;
   for (const t of tests) {
     if (filter && !t.name.includes(filter)) continue;
