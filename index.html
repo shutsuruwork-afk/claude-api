@@ -344,7 +344,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17f';
+const BUILD = '2026-11-17g';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -827,7 +827,7 @@ function cleanStatus(m) {
     if (validId(id) && v && typeof v === 'object') ls[id] = { r: ROUTES.has(v.r) ? v.r : '-', rtt: num(v.rtt), n: num(v.n) };
   }
   return { t: 'st', id: m.id, sq: m.sq, name: cleanName(m.name), color: safeColor(m.color) || colorOf(m.id), beacon: !!m.beacon,
-    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16), sub: !!m.sub };
+    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16), sub: !!m.sub, lan: !!m.lan };
 }
 function cleanRt(m) {
   const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), k: r.k === 'u' ? 'u' : 'r',
@@ -891,7 +891,7 @@ function linksView() {
 
 function myStatus() {
   return { t: 'st', id: me.id, sq: ++statusSeq, name: me.name, color: me.color, beacon: !!beaconPeer && beaconOpen,
-    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, sub: SUB, ttl: 6 };
+    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, sub: SUB, lan: lanAssist, ttl: 6 };
 }
 function sendStatus() {
   const s = JSON.stringify(myStatus());
@@ -2131,8 +2131,11 @@ async function runAuto() {
       st = stepStart('直接接続（全組み合わせ）');
       await waitFor(() => meshSummary().pending === 0, 25000, 500);
       const ms = M.mesh = meshSummary();
+      // which devices tell their local address to others (the LAN helper): needed to read an H / S result correctly
+      M.lanAssist = [lanAssist ? me.name : null, ...onlineOthers().filter(([, m]) => m.status && m.status.lan).map(([, m]) => m.name)].filter(Boolean);
+      const lanNote = M.lanAssist.length ? `｜「LAN 内の直接接続を助ける」を使った端末: ${M.lanAssist.join(', ')}` : '';
       stepEnd(st, ms.ok === ms.pairs ? 'pass' : ms.ok ? 'warn' : 'fail',
-        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') + (ms.why.length ? `｜理由: ${ms.why.join(' ／ ')}` : '') +
+        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') + (ms.why.length ? `｜理由: ${ms.why.join(' ／ ')}` : '') + lanNote +
         (ms.ok ? '' : '｜相手は見つかるのに端末同士の通信が通りません（Wi-Fi の端末間通信の禁止・ローカル IP が伝わらない等）。「相手が出てこない・つながらないとき」を参照'));
 
       if (!ms.ok) {
@@ -2303,7 +2306,7 @@ function deriveCaps(M) {
   else if (M.roomBusy) add('reach', REACH, 'ng', 'ルームに他の端末がいるのに接続できない（相手が古い版のファイル、または端末同士の通信が止められている）');
   else add('reach', REACH, 'na', '相手がいないため未検証');
   const np = ms && ms.pairs && !ms.ok ? '相手と直接つながらないため未検証' : '相手がいないため未検証';
-  add('lan', '同じネットワーク内の端末と直接接続', ms && ms.H ? 'ok' : 'na', ms && ms.H ? `同一LAN の組 ${ms.H} 組で直接接続` : '同じネットワーク内の相手とは未検証');
+  add('lan', '同じネットワーク内の端末と直接接続', ms && ms.H ? 'ok' : 'na', ms && ms.H ? `同一LAN の組 ${ms.H} 組で直接接続` + (M.lanAssist && M.lanAssist.length ? `（「LAN 内の直接接続を助ける」を使用: ${M.lanAssist.join(', ')}）` : '（補助なし）') : '同じネットワーク内の相手とは未検証');
   const d = M.diag;
   if (ms && ms.S) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ok', `別ネットワークの組 ${ms.S} 組で直接接続`);
   else if (d && d.stunCount && !d.srflx) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN（UDP）が通らない → TURN 中継が必要');
@@ -2483,6 +2486,7 @@ function buildReport() {
   L.push(`# P2P テスト結果 ${d.toLocaleString()}`);
   L.push(`端末: ${me.name} / ${navigator.userAgent}`);
   L.push(`版: ${BUILD}`);
+  L.push(`LAN 内の直接接続を助ける: ${lanAssist ? '使用中' : '未使用'}`);
   L.push(`ページ: ${location.protocol === 'file:' ? 'ローカルファイル' : location.origin + location.pathname}`);
   L.push(`ルーム: ${room || '(未参加)'} / シグナリング: ${$('sigState').textContent} / 役割: ${$('roleState').textContent}`);
   L.push(`シグナリングサーバー: ${CFG.server ? CFG.server.host + ':' + (CFG.server.port || '') + (CFG.server.path || '') : '0.peerjs.com (既定)'}`);

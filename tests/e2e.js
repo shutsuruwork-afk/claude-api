@@ -340,6 +340,19 @@ test('「LAN 内の直接接続を助ける」でローカル IP が相手に伝
   assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(await p.textContent('#diagOut')), '診断画面に IP が出ている');
 });
 
+test('「LAN 内の直接接続を助ける」を使った端末が、相手の画面と結果に残る', async () => {
+  const [A, B] = await group(2);
+  await A.context().grantPermissions(['microphone']);
+  await A.click('#helpBox > summary'); await A.click('#lanBtn');
+  await A.waitForFunction(() => document.querySelector('#lanState').textContent !== '', null, { timeout: 10000 });
+  if (!/有効/.test(await A.textContent('#lanState'))) { console.log('  (このブラウザはマイク取得に非対応のため省略)'); return; }
+  await B.waitForFunction(() => [...members.values()].some(m => m.status && m.status.lan), null, { timeout: 10000 });
+  assert.match(await A.evaluate(() => buildReport()), /LAN 内の直接接続を助ける: 使用中/);
+  assert.match(await B.evaluate(() => buildReport()), /LAN 内の直接接続を助ける: 未使用/);
+  const reason = await B.evaluate(() => deriveCaps({ participants: ['B', 'A'], lanAssist: ['A'], mesh: { pairs: 1, ok: 1, H: 1, S: 0, R: 0, fail: 0, pending: 0, failed: [], why: [] } }).find(c => c.key === 'lan').reason);
+  assert.match(reason, /を使用: A/);
+});
+
 test('TURN: 経路別に確認し、中継のみでも同期する', async () => {
   const Turn = require('node-turn');
   const srv = new Turn({ listeningPort: 3479, listeningIps: ['127.0.0.1'], relayIps: ['127.0.0.1'], authMech: 'long-term', credentials: { u: 'p' }, debugLevel: 'OFF' });
