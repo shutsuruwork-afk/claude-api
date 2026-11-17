@@ -171,6 +171,43 @@ test('窓口の端末が抜けたら残りが窓口を引き継ぎ、新規参�
   await waitSynced([B, C, D], 3, 30000);
 });
 
+test('unit: つながらない理由の切り分け', async () => {
+  const p = await open('U');
+  const r = await p.evaluate(() => {
+    const base = { lh: 1, lhHidden: 1, ls: 1, lr: 0, rh: 1, rhHidden: 1, rs: 1, rr: 0, sameNat: true, answered: true, pairs: 2, sent: 40, recv: 0, got: 0 };
+    const sdp = 'v=0\r\na=candidate:1 1 udp 2113937151 0a1b2c3d-1111.local 54321 typ host generation 0\r\na=candidate:2 1 udp 1677729535 203.0.113.9 60214 typ srflx raddr 0.0.0.0 rport 0\r\na=candidate:3 1 tcp 1518280447 192.168.1.5 9 typ host tcptype active\r\n';
+    const c = sdpCands(sdp);
+    return [diagReason(base), diagReason({ ...base, lhHidden: 0, rhHidden: 0, lan: true }), diagReason({ ...base, sameNat: false }), diagReason({ ...base, sameNat: null, ls: 0, rs: 0 }),
+      diagReason({ ...base, rh: 0, rs: 0 }), diagReason({ ...base, lh: 0, ls: 0, relayOnly: true }), diagReason({ ...base, answered: false }), [c.h, c.hid, c.s, c.r, c.pub.size]];
+  });
+  assert.match(r[0], /同じネットワーク.*ローカル IP を隠している.*LAN 内の直接接続を助ける/);
+  assert.match(r[1], /ローカル IP を伝えても届かない.*端末間通信が禁止.*TURN/);
+  assert.match(r[2], /別々のネットワーク.*TURN/);
+  assert.match(r[3], /同じネットワークかどうかは判定できない/);
+  assert.match(r[4], /相手から接続候補が届いていない/);
+  assert.match(r[5], /TURN 中継のみ/);
+  assert.match(r[6], /返事が来ていない/);
+  assert.deepStrictEqual(r[7], [2, 1, 1, 0, 1]);
+  for (const t of r.slice(0, 7)) assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(t), 'IP が理由の文に出ている');
+});
+
+test('候補は出ているのに届かない場合、理由と候補の内訳を表示する', async () => {
+  const room = newRoom();
+  // 相手の候補をすべて捨てる = パケットが 1 つも届かないネットワークと同じ状態
+  const drop = p => p.evaluate(() => { RTCPeerConnection.prototype.addIceCandidate = async () => {}; });
+  const A = await open('A'); await drop(A); await A.fill('#room', room); await A.click('#joinBtn');
+  await A.waitForFunction(() => beaconOpen, null, { timeout: 15000 });
+  const B = await open('B'); await drop(B); await B.fill('#room', room); await B.click('#joinBtn');
+  for (const p of [A, B]) {
+    await p.waitForFunction(() => /見つかりましたが、直接つながりません/.test(document.querySelector('#syncBanner').textContent) && document.querySelector('#whyBox').textContent !== '', null, { timeout: 45000 });
+    const why = await p.textContent('#whyBox');
+    assert.match(why, /自分の候補: host [1-9]/, why);
+    assert.match(why, /相手から接続候補が届いていない|パケットが届かない/, why);
+    assert.ok(!/\d+\.\d+\.\d+\.\d+/.test(why), 'IP が出ている');
+  }
+  assert.match(await A.evaluate(() => buildReport()), /つながらない理由: /);
+});
+
 // 端末同士の通信が塞がれた状態: 中継のみ + TURN なし = 候補が 1 つも出ないので P2P は絶対につながらない（シグナリングは通る）
 const BLOCKED = { ice: [], relayOnly: true };
 const names = p => p.evaluate(() => [...members.values()].map(m => m.name).sort().join(','));
@@ -188,6 +225,7 @@ test('直接通信が塞がれていても相手を発見し、理由を表示�
   for (const p of [A, B, C]) {
     await p.waitForFunction(() => /見つかりましたが、直接つながりません/.test(document.querySelector('#syncBanner').textContent) && document.querySelector('#helpBox').open, null, { timeout: 40000 });
     assert.ok((await p.evaluate(() => document.querySelector('#matrix').innerText)).includes('×'));
+    assert.match(await p.textContent('#whyBox'), /「TURN 中継のみ」の設定/);
   }
 });
 

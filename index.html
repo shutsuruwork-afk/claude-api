@@ -143,6 +143,7 @@
   <section>
     <h2>同期状況（全端末）</h2>
     <div class="banner" id="syncBanner">ルームに参加してください</div>
+    <div id="whyBox" class="hint"></div>
     <details id="helpBox">
       <summary>相手が出てこない・つながらないとき</summary>
       <ol class="hint">
@@ -328,7 +329,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17b';
+const BUILD = '2026-11-17c';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -375,7 +376,7 @@ const DEFAULT_ICE = [
 function defaultName() {
   const ua = navigator.userAgent;
   const dev = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
-    : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Win' : /Linux/.test(ua) ? 'Linux' : '端末';
+    : /CrOS/.test(ua) ? 'Chromebook' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Win' : /Linux/.test(ua) ? 'Linux' : '端末';
   return `${dev}-${rand(3)}`;
 }
 const CFG = Object.assign({ name: defaultName(), ice: DEFAULT_ICE, relayOnly: false, server: null }, store.get('p2pt.cfg', {}));
@@ -540,6 +541,8 @@ class Link {
         const a = attempts.get(this.peerId) || { n: 0, next: 0 };
         a.f = (a.f || 0) + 1;
         attempts.set(this.peerId, a);
+        const why = diagReason(failDiag.get(this.peerId));
+        if (why && a.why !== why) { a.why = why; log(`接続できない理由 (${this.name}): ${why}`, 'ng'); }
       }
       onLinkLost(this, reason);
     }
@@ -570,7 +573,55 @@ function registerLink(L) {
   return true;
 }
 
+// Why a link is not coming up, from what the browser itself reports: which kinds of candidates each side
+// offered and whether any connectivity check got an answer. Addresses are only compared in memory
+// (same public address on both sides => both devices sit behind the same router); they are never stored or shown.
+const failDiag = new Map(); // peerId -> summary of the latest failed/ongoing attempt
+function sdpCands(sdp) {
+  const d = { h: 0, hid: 0, s: 0, r: 0, pub: new Set() };
+  for (const m of String(sdp || '').matchAll(/^a=candidate:\S+ \d+ \S+ \d+ (\S+) \d+ typ (\w+)/gm)) {
+    if (m[2] === 'host') { d.h++; if (/\.local$/i.test(m[1])) d.hid++; }
+    else if (m[2] === 'srflx' || m[2] === 'prflx') { d.s++; d.pub.add(m[1]); }
+    else if (m[2] === 'relay') d.r++;
+  }
+  return d;
+}
+async function sampleLinkDiag(L) {
+  const pc = L.pc;
+  if (!pc || L.isOpen || L.closed || !L.peerId) return;
+  try {
+    const lo = sdpCands(pc.localDescription && pc.localDescription.sdp), re = sdpCands(pc.remoteDescription && pc.remoteDescription.sdp);
+    const d = { lh: lo.h, lhHidden: lo.hid, ls: lo.s, lr: lo.r, rh: re.h, rhHidden: re.hid, rs: re.s, rr: re.r,
+      sameNat: lo.pub.size && re.pub.size ? [...lo.pub].some(a => re.pub.has(a)) : null,
+      answered: !!pc.remoteDescription, pairs: 0, sent: 0, recv: 0, got: 0, ice: pc.iceConnectionState, relayOnly: !!CFG.relayOnly, lan: lanAssist };
+    (await pc.getStats()).forEach(r => {
+      if (r.type !== 'candidate-pair') return;
+      d.pairs++; d.sent += r.requestsSent || 0; d.recv += r.responsesReceived || 0; d.got += r.requestsReceived || 0;
+    });
+    failDiag.set(L.peerId, d);
+    scheduleRender();
+  } catch {}
+}
+function diagReason(d) {
+  if (!d) return '';
+  const side = (h, hid, s, r) => `host ${h}${h && hid === h ? '(ローカルIP非公開)' : ''} / srflx ${s} / relay ${r}`;
+  const detail = `自分の候補: ${side(d.lh, d.lhHidden, d.ls, d.lr)}｜相手の候補: ${side(d.rh, d.rhHidden, d.rs, d.rr)}｜確認パケット: 送信 ${d.sent}・応答 ${d.recv}・相手から受信 ${d.got}`;
+  const hidden = d.lh > 0 && d.lhHidden === d.lh && d.rh > 0 && d.rhHidden === d.rh;
+  let why;
+  if (!d.answered) why = '相手から接続の返事が来ていない（相手がシグナリングサーバーから外れた、または処理が止まっている）';
+  else if (!(d.lh + d.ls + d.lr)) why = d.relayOnly ? 'この端末から接続候補が出ていない（「TURN 中継のみ」の設定で、使える TURN がない）' : 'この端末から接続候補が 1 つも出ていない（ブラウザや管理ポリシーが WebRTC の通信を制限している）';
+  else if (!(d.rh + d.rs + d.rr)) why = '相手から接続候補が届いていない（相手側が「TURN 中継のみ」か、WebRTC の通信を制限されている）';
+  else if (d.recv > 0) why = '確認パケットの応答は届いたが接続が確立しない（経路が不安定）';
+  else if (d.sameNat === true) why = '同じネットワーク（同じルーターの内側）にいるのに端末同士のパケットが届かない → ' +
+    (hidden ? '双方がローカル IP を隠しているため、相手の場所が伝わっていない可能性が高い。「LAN 内の直接接続を助ける」を試す'
+      : d.lan ? 'ローカル IP を伝えても届かないので、Wi-Fi の端末間通信が禁止されている。TURN 中継が必要' : 'Wi-Fi の端末間通信が禁止されている可能性が高い。「LAN 内の直接接続を助ける」を試し、だめなら TURN 中継');
+  else if (d.sameNat === false) why = '別々のネットワークにいて、NAT 越えの直接接続ができない → TURN 中継が必要';
+  else why = '端末同士のパケットが届かない（STUN の応答がなく、同じネットワークかどうかは判定できない）' + (hidden ? '。双方がローカル IP を隠しているので「LAN 内の直接接続を助ける」を試す' : '');
+  return why + '｜' + detail;
+}
+
 function afterRegisteredOpen(L) {
+  failDiag.delete(L.peerId);
   const a = attempts.get(L.peerId);
   const lostAt = lostTimes.get(L.peerId);
   const took = ((now() - L.createdAt) / 1000).toFixed(1);
@@ -975,9 +1026,10 @@ function bindConn(L) {
 function meshTick() {
   const t = now();
   // stale members
-  for (const [id, m] of members) if (t - m.rx > 60000 && !links.has(id)) { members.delete(id); attempts.delete(id); }
+  for (const [id, m] of members) if (t - m.rx > 60000 && !links.has(id)) { members.delete(id); attempts.delete(id); failDiag.delete(id); }
   // connection timeouts and ICE watchdog
   for (const L of [...links.values(), ...pendingManual]) {
+    if (!L.isOpen && L.kind === 'peerjs' && t - L.createdAt > 4000 && t - (L.diagAt || 0) > 4000) { L.diagAt = t; sampleLinkDiag(L); }
     if (!L.isOpen && t - L.createdAt > 20000 && L.kind === 'peerjs') L.close('タイムアウト');
     const pc = L.pc;
     if (L.isOpen && pc) {
@@ -1020,7 +1072,7 @@ function leaveRoom() {
     for (const L of [...links.values()]) L.close('bye');
     releaseBeacon();
     if (peer) { try { peer.destroy(); } catch {} peer = null; }
-    room = null; roomBusy = false; members.clear(); attempts.clear(); lostTimes.clear(); joinTargets.clear();
+    room = null; roomBusy = false; members.clear(); attempts.clear(); failDiag.clear(); lostTimes.clear(); joinTargets.clear();
     setSig('未接続'); setRole();
     $('joinBtn').disabled = false; $('leaveBtn').disabled = true; $('room').disabled = false;
     enableShared(false); scheduleRender();
@@ -1799,6 +1851,10 @@ function render() {
     else if (mismatch.length) { banner.className = 'banner warn'; banner.textContent = `${onlineOthers.length + 1} 台中 ${mismatch.length} 台が同期中/不一致（${mismatch.map(([, m]) => m.name).join(', ')}）`; }
     else { banner.className = 'banner ok'; banner.textContent = `✅ ${onlineOthers.length + 1} 台すべて同期済み（直接接続 ${direct}/${onlineOthers.length}）`; }
   }
+  // reasons for peers that are known but not connected
+  const whys = onlineOthers.filter(([id]) => !(links.get(id) && links.get(id).isOpen) && (attempts.get(id) || {}).f && failDiag.has(id))
+    .map(([id, m]) => `<div><b>${esc(m.name)}</b>: ${esc(diagReason(failDiag.get(id)))}</div>`).join('');
+  if ($('whyBox').__h !== whys) { $('whyBox').innerHTML = whys; $('whyBox').__h = whys; }
   // links table
   let lh = '<tr><th>相手</th><th>方式</th><th>状態</th><th>経路</th><th>RTT</th><th>再接続</th><th>速度</th><th></th></tr>';
   const all = [...links.values()];
@@ -1879,14 +1935,16 @@ const onlineOthers = () => [...members.entries()].filter(([, m]) => isOnline(m))
 // Classify every pair of devices in the room using each side's reported links.
 function meshSummary() {
   const nodes = [[me.id, me.name, myLinksView()], ...onlineOthers().map(([id, m]) => [id, m.name, m.status && m.status.links])];
-  const out = { pairs: 0, ok: 0, H: 0, S: 0, R: 0, fail: 0, pending: 0, failed: [] };
+  const out = { pairs: 0, ok: 0, H: 0, S: 0, R: 0, fail: 0, pending: 0, failed: [], why: [] };
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
     const [ia, na, la] = nodes[i], [ib, nb, lb] = nodes[j];
     const v = [la && la[ib], lb && lb[ia]].filter(Boolean).map(x => x.r);
     out.pairs++;
     const route = v.find(r => r === 'H' || r === 'S' || r === 'R');
     if (route) { out.ok++; out[route]++; }
-    else if (v.includes('-') || v.includes('c') || !v.length) { out.pending++; out.failed.push(`${na}⇄${nb}`); }
+    else if (i === 0 && failDiag.has(ib) && out.why.length < 3) out.why.push(`${nb}: ${diagReason(failDiag.get(ib))}`);
+    if (route) continue;
+    if (v.includes('-') || v.includes('c') || !v.length) { out.pending++; out.failed.push(`${na}⇄${nb}`); }
     else { out.fail++; out.failed.push(`${na}⇄${nb}`); }
   }
   return out;
@@ -2010,7 +2068,7 @@ async function runAuto() {
       await waitFor(() => meshSummary().pending === 0, 25000, 500);
       const ms = M.mesh = meshSummary();
       stepEnd(st, ms.ok === ms.pairs ? 'pass' : ms.ok ? 'warn' : 'fail',
-        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') +
+        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') + (ms.why.length ? `｜理由: ${ms.why.join(' ／ ')}` : '') +
         (ms.ok ? '' : '｜相手は見つかるのに端末同士の通信が通りません（Wi-Fi の端末間通信の禁止・ローカル IP が伝わらない等）。「相手が出てこない・つながらないとき」を参照'));
 
       if (!ms.ok) {
@@ -2135,7 +2193,7 @@ function deriveCaps(M) {
   const REACH = '相手の端末との直接接続（P2P）';
   if (ms && ms.pairs) add('reach', REACH, ms.ok === ms.pairs ? 'ok' : ms.ok ? 'cond' : 'ng',
     ms.ok === ms.pairs ? `${ms.pairs} 組すべて直接接続` : ms.ok ? `${ms.pairs} 組中 ${ms.ok} 組。つながらない: ${ms.failed.join(', ')}`
-      : '相手は見つかったが、どの組も直接つながらない → 端末同士の通信が止められている可能性。「LAN 内の直接接続を助ける」か TURN 中継が必要');
+      : '相手は見つかったが、どの組も直接つながらない。' + (ms.why && ms.why.length ? ms.why[0] : '端末同士の通信が止められている可能性。「LAN 内の直接接続を助ける」か TURN 中継が必要'));
   else if (M.roomBusy) add('reach', REACH, 'ng', 'ルームに他の端末がいるのに接続できない（相手が古い版のファイル、または端末同士の通信が止められている）');
   else add('reach', REACH, 'na', '相手がいないため未検証');
   const np = ms && ms.pairs && !ms.ok ? '相手と直接つながらないため未検証' : '相手がいないため未検証';
@@ -2320,6 +2378,8 @@ function buildReport() {
   if (!ls.length) L.push('(なし)');
   for (const k of ls) L.push(`${k.name} | ${k.kind === 'manual' ? '手動' : 'PeerJS'} | ${k.isOpen ? 'open' : k.state} | 経路 ${k.routeDetail || k.route} | RTT ${k.rtt != null ? k.rtt + 'ms' : '-'} | 再接続 ${reconnectCount.get(k.peerId) || 0}${k.recovery ? ' (' + k.recovery + ')' : ''} | 速度 ${k.tpResult || '-'}`);
   for (const [id, a] of attempts) if (!links.has(id)) L.push(`${(members.get(id) || {}).name || id} | 接続失敗 ${a.n} 回`);
+  L.push('');
+  for (const [id, d] of failDiag) if (!(links.get(id) && links.get(id).isOpen)) L.push(`${(members.get(id) || {}).name || id} | つながらない理由: ${diagReason(d)}`);
   L.push('');
   L.push(`## 一斉書き込みテスト: ${$('burstResult').textContent || '(未実施)'}`);
   L.push('');
