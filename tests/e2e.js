@@ -323,6 +323,17 @@ test('退出して別のルームに入っても、前のルームのデータ�
   for (const p of [A, B]) assert.deepStrictEqual(await p.evaluate(() => [ops.size, epoch, !!grid[8], !!grid[4]]), [1, 0, true, false]);
 });
 
+test('ページを開き直すだけで前回のルームに戻る（退出したあとは戻らない）', async () => {
+  const [A, B] = await group(2);
+  await B.goto(`http://127.0.0.1:${WEB}/`); // ルーム名なしで開き直す（ファイルをダブルクリックしたのと同じ）
+  await waitSynced([A, B], 2, 20000);
+  await B.click('#leaveBtn');
+  await B.waitForFunction(() => !room && !document.querySelector('#joinBtn').disabled, null, { timeout: 5000 });
+  await B.goto(`http://127.0.0.1:${WEB}/`);
+  await B.waitForTimeout(1500);
+  assert.strictEqual(await B.evaluate(() => room), null);
+});
+
 test('退出してすぐ同じルームに入り直せる', async () => {
   const [A, B] = await group(2);
   for (let i = 0; i < 2; i++) {

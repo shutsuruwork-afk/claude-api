@@ -346,7 +346,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-18a';
+const BUILD = '2026-11-18b';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -586,6 +586,7 @@ class Link {
         if (why && a.why !== why) { a.why = why; log(`接続できない理由 (${this.name}): ${why}`, 'ng'); }
       }
       onLinkLost(this, reason);
+      if (reason !== 'bye' && room) setTimeout(meshTick, 0); // reconnect now, not at the next one-second tick
     }
     try { this.kind === 'peerjs' ? this.conn.close() : (this._dc && this._dc.close(), this._pc && this._pc.close()); } catch {}
     scheduleRender();
@@ -978,6 +979,7 @@ function joinRoom(r) {
   try { history.replaceState(null, '', location.pathname + '?room=' + encodeURIComponent(r)); } catch {} // not allowed everywhere (e.g. some file:// setups)
   $('joinBtn').disabled = true; $('leaveBtn').disabled = false; $('room').disabled = true;
   idRetries = 0; signalDead = false; claimFails = 0; queryFails = 0; nextBeaconQuery = 0;
+  if (!SUB) store.set('p2pt.room', r); // next time the page is simply opened, it goes straight back into this room
   setRole();
   openSignal();
 }
@@ -1147,7 +1149,7 @@ function meshTick() {
     if (L.isOpen && pc) {
       if (pc.iceConnectionState === 'disconnected') {
         if (!L.iceDiscSince) L.iceDiscSince = t;
-        else if (t - L.iceDiscSince > 6000) L.close('ICE disconnected が継続');
+        else if (t - L.iceDiscSince > 2500) L.close('ICE disconnected が継続'); // the browser already waited several seconds before saying "disconnected"
       } else L.iceDiscSince = 0;
     }
   }
@@ -1216,7 +1218,7 @@ window.addEventListener('pagehide', () => {
   for (const L of links.values()) L.send({ t: 'bye' });
   try { beaconPeer && beaconPeer.destroy(); peer && peer.destroy(); } catch {}
 });
-window.addEventListener('online', () => { log('ネットワーク復帰を検知'); if (peer && peer.disconnected && !peer.destroyed) { lastSignalTry = now(); try { peer.reconnect(); } catch {} } });
+window.addEventListener('online', () => { log('ネットワーク復帰を検知'); setTimeout(meshTick, 300); if (peer && peer.disconnected && !peer.destroyed) { lastSignalTry = now(); try { peer.reconnect(); } catch {} } });
 window.addEventListener('offline', () => log('ネットワーク切断を検知', 'warn'));
 
 // =====================================================================
@@ -2596,7 +2598,7 @@ function deriveCaps(M) {
   } else add('file', '画像・ファイルの共有', 'na', np);
   if (M.reconnect) {
     const t = M.reconnect.times, ok = t.length && t.every(x => x != null), w = ok ? Math.max(...t) : null;
-    add('recover', '切断からの自動復帰', !ok ? 'ng' : w <= 5000 ? 'ok' : 'cond', (ok ? `最大 ${(w / 1000).toFixed(1)} 秒でつなぎ直し` : '復帰しなかった') + '｜意図的に切ってからつなぎ直すまでの時間。実際の回線断は、気づくまでに 6 秒ほど余分にかかる' + (peers >= 2 ? '｜この端末と各相手の間だけを測定' : ''));
+    add('recover', '切断からの自動復帰', !ok ? 'ng' : w <= 5000 ? 'ok' : 'cond', (ok ? `最大 ${(w / 1000).toFixed(1)} 秒でつなぎ直し` : '復帰しなかった') + '｜意図的に切ってからつなぎ直すまでの時間。実際の回線断は、気づくまでに数秒余分にかかる' + (peers >= 2 ? '｜この端末と各相手の間だけを測定' : ''));
   } else add('recover', '切断からの自動復帰', 'na', '未検証');
   add('clock', '時刻合わせ（タイマー・どちらが先か判定）', M.clock == null ? 'na' : M.clock < 20 ? 'ok' : 'cond',
     M.clock == null ? '未検証' : M.clock < 20 ? `時計のずれ最大 ${f0(M.clock)}ms` : `時計のずれ最大 ${f0(M.clock)}ms → ゲーム側で補正が必要`);
@@ -2802,9 +2804,10 @@ $('reportBtn').onclick = async () => {
 const params = new URLSearchParams(location.search);
 const IS_FILE = location.protocol === 'file:';
 if (IS_FILE) $('shareBtn').textContent = 'ルーム名をコピー';
-$('room').value = params.get('room') || 'room-' + rand(6);
+const savedRoom = SUB ? '' : txt(store.get('p2pt.room', '')).slice(0, 60);
+$('room').value = params.get('room') || savedRoom || 'room-' + rand(6);
 $('joinBtn').onclick = () => { const r = $('room').value.trim(); if (r) { joinRoom(r); enableShared(true); } };
-$('leaveBtn').onclick = leaveRoom;
+$('leaveBtn').onclick = () => { store.del('p2pt.room'); leaveRoom(); }; // leaving on purpose: do not walk back in on the next open
 $('room').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) $('joinBtn').click(); });
 $('shareBtn').onclick = async () => {
   const name = $('room').value.trim();
@@ -2818,7 +2821,7 @@ $('shareBtn').onclick = async () => {
   catch { log('コピーに失敗しました。この URL を共有してください: ' + url, 'warn'); }
 };
 if (typeof Peer === 'undefined') { setSig('PeerJS 読み込み失敗（手動モードのみ利用可）', 'ng'); $('joinBtn').disabled = true; $('manualBox').open = true; }
-else if (params.get('room')) $('joinBtn').click();
+else if (params.get('room') || savedRoom) { if (!params.get('room')) log(`前回のルーム「${savedRoom}」に自動で参加します（やめるときは「退出」）`); $('joinBtn').click(); }
 render();
 </script>
 </body>
