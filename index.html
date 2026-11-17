@@ -75,6 +75,8 @@
   table.cmp td:first-child { min-width: 180px; }
   #soloHolder iframe { width: 100%; height: 190px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
   body.sub h1, body.sub .lead, body.sub #howto { display: none; }
+  #lanBtn { white-space: normal; text-align: left; }
+  @media (max-width: 600px) { input, textarea, select { font-size: 16px; } } /* below 16px iOS zooms the page on focus */
 </style>
 </head>
 <body>
@@ -86,7 +88,7 @@
   <section>
     <h2>ルーム</h2>
     <div class="row">
-      <input id="room" placeholder="ルーム名" autocomplete="off">
+      <input id="room" placeholder="ルーム名" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="60">
       <button class="primary" id="joinBtn">参加</button>
       <button id="leaveBtn" disabled>退出</button>
       <button id="shareBtn">招待 URL をコピー</button>
@@ -120,7 +122,7 @@
     </details>
     <div class="scroll"><table class="matrix" id="matrix"></table></div>
     <p class="hint legend">
-      <span><b class="ok">H</b> 同じネットワーク内で直接</span><span><b class="ok">S</b> 別ネットワークと直接</span><span><b class="warn">R</b> TURN中継</span>
+      <span><b class="ok">H</b> 同じネットワーク内で直接</span><span><b class="ok">S</b> 別ネットワークと直接</span><span><b class="ok">D</b> 直接（同じネットワークかは不明）</span><span><b class="warn">R</b> TURN中継</span>
       <span>… 接続中</span><span><b class="ng">×</b> 失敗/再試行中</span><span>· 直接接続なし（他端末経由で同期）</span>
     </p>
     <p class="hint">各行は「その端末から見た」接続状況です。ハッシュが全員一致していれば共有データは同期しています。直接つながらない組み合わせがあっても、他の端末を経由して同期します。</p>
@@ -211,7 +213,7 @@
     <h2 style="margin-top:16px">チャット（共有）</h2>
     <div id="chat"></div>
     <div class="row">
-      <input id="msg" placeholder="メッセージ" disabled autocomplete="off">
+      <input id="msg" placeholder="メッセージ" disabled autocomplete="off" maxlength="2000">
       <button id="send" disabled>送信</button>
     </div>
   </section>
@@ -344,7 +346,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 const $ = id => document.getElementById(id);
 // Shown at the top of the page and in every report, so photos and results tell which copy of the file was used.
 // Bump it whenever the behaviour of this page changes.
-const BUILD = '2026-11-17g';
+const BUILD = '2026-11-18a';
 const now = () => performance.now();
 const T0 = now();
 const rand = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => 'abcdefghijkmnpqrstuvwxyz23456789'[b % 32]).join('');
@@ -363,8 +365,8 @@ function cyrb53(str, seed = 0) {
 const colorOf = id => `hsl(${cyrb53(id)[0] % 360} 70% 52%)`;
 // Everything received from other devices is untrusted: validate before it is stored or rendered.
 const safeColor = c => typeof c === 'string' && /^hsl\(\d{1,3} \d{1,3}% \d{1,3}%\)$/.test(c) ? c : '';
-const validId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id);
-const cleanName = v => txt(v).slice(0, 40) || '?';
+const validId = id => typeof id === 'string' && /^p[a-z0-9]{9}$/.test(id); // the format this page generates (never a built-in property name)
+const cleanName = v => txt(v).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 40) || '?';
 const num = v => typeof v === 'number' && Number.isFinite(v) ? v : null;
 function log(msg, cls) {
   const el = $('log');
@@ -394,7 +396,19 @@ function defaultName() {
     : /CrOS/.test(ua) ? 'Chromebook' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Win' : /Linux/.test(ua) ? 'Linux' : '端末';
   return `${dev}-${rand(3)}`;
 }
-const CFG = Object.assign({ name: defaultName(), ice: DEFAULT_ICE, relayOnly: false, server: null }, store.get('p2pt.cfg', {}));
+// A check that never keeps the connection: would the browser accept these ICE servers?
+function iceError(ice) {
+  try { new RTCPeerConnection({ iceServers: ice }).close(); return ''; } catch (e) { return e.message || String(e); }
+}
+// Whatever is in storage (older versions, hand edits, another page on the same origin) is reduced to known-good shapes.
+const CFG = (raw => {
+  const c = raw && typeof raw === 'object' ? raw : {};
+  const sv = c.server && typeof c.server === 'object' && typeof c.server.host === 'string' && c.server.host.trim() ? c.server : null;
+  let ice = Array.isArray(c.ice) ? c.ice.filter(x => x && typeof x === 'object' && x.urls) : DEFAULT_ICE;
+  if (typeof RTCPeerConnection === 'function' && iceError(ice)) ice = DEFAULT_ICE;
+  return { name: typeof c.name === 'string' && c.name.trim() ? cleanName(c.name.trim()) : defaultName(), ice, relayOnly: c.relayOnly === true,
+    server: sv ? { host: sv.host.trim(), port: Number(sv.port) || undefined, path: typeof sv.path === 'string' && sv.path ? sv.path : '/', secure: sv.secure !== false } : null };
+})(store.get('p2pt.cfg', {}));
 store.set('p2pt.cfg', CFG);
 const rtcConfig = () => ({ iceServers: CFG.ice, iceTransportPolicy: CFG.relayOnly ? 'relay' : 'all' });
 
@@ -409,6 +423,9 @@ $('cfgSave').onclick = () => {
   let ice;
   try { ice = JSON.parse($('cfgIce').value); if (!Array.isArray(ice)) throw 0; }
   catch { alert('ICE サーバーは JSON 配列で入力してください'); return; }
+  if (ice.some(x => !x || typeof x !== 'object' || !x.urls)) { alert('ICE サーバーの各項目には "urls" が必要です'); return; }
+  const bad = typeof RTCPeerConnection === 'function' ? iceError(ice) : '';
+  if (bad) { alert('この ICE サーバーの設定はブラウザに受け付けられません:\n' + bad); return; }
   const host = $('cfgHost').value.trim();
   store.set('p2pt.cfg', {
     name: $('cfgName').value.trim() || defaultName(), ice, relayOnly: $('cfgRelay').checked,
@@ -465,9 +482,10 @@ function adoptEpoch(ep, fromLink) {
   resetState(ep);
   for (const L of links.values()) if (L !== fromLink && L.isOpen) L.send({ t: 'sv', ep: epoch, sv: {} });
 }
-const epochOf = v => Number.isSafeInteger(v) && v > 0 ? v : 0;
+const epochOf = v => Number.isSafeInteger(v) && v > 0 && v < 1e9 ? v : 0;
 function applyOp(op, fromLink) {
-  if (!op || typeof op.id !== 'string' || typeof op.o !== 'string' || !Number.isFinite(op.l) || !Number.isFinite(op.s)) return false;
+  if (!op || typeof op.id !== 'string' || op.id.length > 80 || typeof op.o !== 'string' || op.o.length > 20 || !Number.isSafeInteger(op.l) || op.l > 1e12 || !Number.isSafeInteger(op.s)) return false;
+  if (txt(op.v).length > 4000 || txt(op.n).length > 100) return false; // one oversized op would make every later sync batch fail
   const e = epochOf(op.e);
   if (e < epoch) return false;
   if (e > epoch) adoptEpoch(e, fromLink);
@@ -581,6 +599,7 @@ function registerLink(L) {
   if (ex && ex !== L && !ex.closed) {
     let keepNew;
     if (ex.isOpen && ex.kind !== L.kind) keepNew = false;
+    else if (L.isOpen && !ex.isOpen && ex.kind !== L.kind) keepNew = true; // a working manual link beats a PeerJS attempt that is still trying
     else {
       const pref = me.id < L.peerId ? me.id : L.peerId;
       if (L.initiator === pref && ex.initiator !== pref) keepNew = true;
@@ -597,6 +616,9 @@ function registerLink(L) {
       const why = diagReason(failDiag.get(L.peerId));
       if (why && a.why !== why) { a.why = why; log(`接続できない理由 (${ex.name}): ${why}`, 'ng'); }
     }
+    // the replaced link gets the same bookkeeping as a closed one (a waiting speed test, the reconnect counter)
+    if (ex.tp) { ex.tp.reject && ex.tp.reject(new Error('closed')); ex.tp = null; }
+    if (ex.openedAt) { lostTimes.set(L.peerId, now()); log(`切断: ${ex.name}（相手がつなぎ直してきた）`, 'warn'); }
     ex.closed = true; ex.state = 'closed';
     try { ex.kind === 'peerjs' ? ex.conn.close() : ex._pc.close(); } catch {}
   }
@@ -655,9 +677,10 @@ function diagReason(d) {
   else if (!(d.lh + d.ls + d.lr)) why = d.relayOnly ? 'この端末から接続候補が出ていない（「TURN 中継のみ」の設定で、使える TURN がない）' : 'この端末から接続候補が 1 つも出ていない（ブラウザや管理ポリシーが WebRTC の通信を制限している）';
   else if (!(d.rh + d.rs + d.rr)) why = '相手から接続候補が届いていない（相手側が「TURN 中継のみ」か、WebRTC の通信を制限されている）';
   else if (d.recv > 0) why = '確認パケットの応答は届いたが接続が確立しない（経路が不安定）';
+  else if (d.got > 0) why = '相手からの確認パケットは届くが、こちらからの確認に応答が返らない（片方向しか通らない）→ TURN 中継が必要';
   else if (d.sameNat === true) why = '同じネットワーク（同じルーターの内側）にいるのに端末同士のパケットが届かない → ' +
     (hidden ? '双方がローカル IP を隠しているため、相手の場所が伝わっていない可能性が高い。「LAN 内の直接接続を助ける」を試す'
-      : d.lan ? 'ローカル IP を伝えても届かないので、Wi-Fi の端末間通信が禁止されている。TURN 中継が必要' : 'Wi-Fi の端末間通信が禁止されている可能性が高い。「LAN 内の直接接続を助ける」を試し、だめなら TURN 中継');
+      : 'どちらかのローカル IP は伝わっているのに届かないので、Wi-Fi が端末同士の通信を止めている可能性が高い。TURN 中継が必要');
   else if (d.sameNat === false) why = '別々のネットワークにいて、NAT 越えの直接接続ができない → TURN 中継が必要';
   else why = '端末同士のパケットが届かない（STUN の応答がなく、同じネットワークかどうかは判定できない）' + (hidden ? '。双方がローカル IP を隠しているので「LAN 内の直接接続を助ける」を試す' : '');
   return why + '｜' + detail;
@@ -692,7 +715,11 @@ function onLinkLost(L, reason) {
     log(`切断: ${L.name} (${reason || '不明'})`, reason === 'bye' ? '' : 'warn');
     if (reason !== 'bye') lostTimes.set(L.peerId, now());
   }
-  if (reason === 'bye') { members.delete(L.peerId); lostTimes.delete(L.peerId); }
+  if (reason === 'bye') {
+    members.delete(L.peerId); lostTimes.delete(L.peerId);
+    const P = ltRunning() && lt.peers.get(L.peerId);
+    if (P) P.left = true; // it left on purpose: not a connection failure
+  }
 }
 
 // =====================================================================
@@ -730,9 +757,10 @@ function handleMessage(L, m) {
       const out = [];
       for (const [o, arr] of originOps) {
         const [cnt, max] = Array.isArray(theirs[o]) ? theirs[o] : [0, 0];
-        if (cnt >= arr.length) continue;
+        let mine = 0; for (const op of arr) if (op.s > mine) mine = op.s;
+        if (cnt >= arr.length && !(cnt === arr.length && max !== mine)) continue; // same count but a different newest op: both hold different subsets
         // no gaps on their side -> only send newer ops; otherwise resend this origin's ops
-        for (const op of arr) if (cnt !== max || op.s > max) out.push(op);
+        for (const op of arr) if (cnt !== max || cnt >= arr.length || op.s > max) out.push(op);
       }
       if (out.length) L.sendOps(out);
       break;
@@ -803,14 +831,18 @@ function handleMessage(L, m) {
       break;
     }
     case 'autostep': {
-      if (typeof m.id !== 'string') return;
+      if (typeof m.id !== 'string' || m.id.length < 6 || m.id.length > 20) return;
       const key = 'as' + m.id + ':' + m.seq;
       if (seenFlood.has(key)) return;
       seenFlood.add(key);
       for (const o of links.values()) if (o !== L && o.isOpen) o.send(m);
       if (!auto || auto.id !== m.id) { remoteAuto = { by: cleanName(m.by), text: txt(m.text).slice(0, 200), at: now() }; renderRemoteAuto(); }
       // Two devices started at the same moment: every device applies the same rule (smaller id wins), so exactly one run continues.
-      if (auto && auto.running && auto.id !== m.id && m.id < auto.id) auto.abort = cleanName(m.by);
+      if (auto && auto.running && auto.id !== m.id) {
+        // the run that started clearly earlier continues; only a near-simultaneous start is decided by id
+        const theirs = num(m.age) || 0, mine = now() - auto.t0;
+        if (theirs > mine + 5000 || (Math.abs(theirs - mine) <= 5000 && m.id < auto.id)) auto.abort = cleanName(m.by);
+      }
       break;
     }
     case 'autores': {
@@ -831,14 +863,14 @@ function handleMessage(L, m) {
     case 'tp-done': if (L.tp && L.tp.id === m.id) L.tp.resolve(m); break;
   }
 }
-const ROUTES = new Set(['H', 'S', 'R', 'c', 'x', '-']);
+const ROUTES = new Set(['H', 'S', 'R', 'D', 'c', 'x', '-']);
 function cleanStatus(m) {
   const ls = {};
   if (m.links && typeof m.links === 'object') for (const [id, v] of Object.entries(m.links).slice(0, 64)) {
     if (validId(id) && v && typeof v === 'object') ls[id] = { r: ROUTES.has(v.r) ? v.r : '-', rtt: num(v.rtt), n: num(v.n) };
   }
   return { t: 'st', id: m.id, sq: m.sq, name: cleanName(m.name), color: safeColor(m.color) || colorOf(m.id), beacon: !!m.beacon,
-    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16), sub: !!m.sub, lan: !!m.lan };
+    links: ls, h: txt(m.h).slice(0, 16) || '?', n: num(m.n), v: txt(m.v).slice(0, 16), sub: !!m.sub, lan: !!m.lan, busy: txt(m.busy).slice(0, 20) };
 }
 function cleanRt(m) {
   const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), k: r.k === 'u' ? 'u' : 'r',
@@ -868,11 +900,19 @@ const ONLINE_MS = 9000;
 const SIG_MS = 45000; // a member known only through the signalling server (no P2P link yet) stays listed this long
 let roomBusy = false; // someone else holds the room beacon
 
+// Two devices with the same display name would be indistinguishable in every table and result.
+function uniqueName(id, name) {
+  const n = cleanName(name);
+  const clash = n === me.name || [...members].some(([oid, m]) => oid !== id && m.name === n);
+  return clash ? `${n.slice(0, 34)}·${id.slice(-3)}` : n;
+}
+const MAX_MEMBERS = 64;
 function touchMember(id, info) {
+  if (!members.has(id) && members.size >= MAX_MEMBERS) return;
   const m = members.get(id) || { name: id, color: colorOf(id) };
   const isNew = !members.has(id) || !isOnline(m);
   Object.assign(m, info, { rx: now() });
-  m.name = cleanName(m.name); m.color = safeColor(m.color) || colorOf(id);
+  m.name = info && info.name != null ? uniqueName(id, info.name) : cleanName(m.name); m.color = safeColor(m.color) || colorOf(id);
   members.set(id, m);
   if (isNew) log(`メンバー: ${m.name} を認識`);
   scheduleRender();
@@ -882,10 +922,10 @@ const isLive = m => !!m.status && now() - m.rx < ONLINE_MS; // actually exchangi
 // The signalling server delivered something from this device, so it is in the room even if no P2P link
 // can be made. Without this, a network that blocks device-to-device traffic looks like an empty room.
 function noteSignal(id, name) {
-  if (!validId(id) || id === me.id) return;
+  if (!validId(id) || id === me.id || (!members.has(id) && members.size >= MAX_MEMBERS)) return;
   const m = members.get(id) || { name: id, color: colorOf(id), rx: 0 };
   const fresh = !members.has(id) || !isOnline(m);
-  if (name != null && !m.status) m.name = cleanName(name);
+  if (name != null && !m.status) m.name = uniqueName(id, name);
   m.rx = m.sigRx = now();
   members.set(id, m);
   if (fresh) log(`メンバー: ${m.name} を発見（シグナリング経由）`);
@@ -902,7 +942,7 @@ function linksView() {
 
 function myStatus() {
   return { t: 'st', id: me.id, sq: ++statusSeq, name: me.name, color: me.color, beacon: !!beaconPeer && beaconOpen,
-    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, sub: SUB, lan: lanAssist, ttl: 6 };
+    links: linksView(), h: stateHash(), n: ops.size, v: BUILD, sub: SUB, lan: lanAssist, busy: ltRunning() ? 'lt:' + lt.id : auto && auto.running ? 'auto' : rt && !rt.done ? 'rt' : '', ttl: 6 };
 }
 function sendStatus() {
   const s = JSON.stringify(myStatus());
@@ -918,12 +958,13 @@ function scheduleStatus() {
 // PeerJS signaling, room bootstrap (beacon), mesh maintenance
 // =====================================================================
 let peer = null, beaconPeer = null, beaconOpen = false, room = null, lastBeaconSeen = 0, lastBeaconQuery = 0, lastClaimTry = 0;
+let lastSignalTry = 0, idRetries = 0, signalDead = false, claimFails = 0, queryFails = 0, nextBeaconQuery = 0, bpDownSince = 0;
 const peerOpts = () => Object.assign({ config: rtcConfig(), debug: 1 }, CFG.server || {});
 // PeerJS IDs must be alphanumeric words joined by single - or _. Other names (e.g. Japanese, spaces)
 // are replaced by a hash of the name, so every name is valid and different names never share an ID.
 const beaconIdOf = r => {
   const n = r.normalize('NFKC').trim().toLowerCase();
-  return 'p2pt-room-' + (/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(n) ? n : 'x' + cyrb53(n).map(x => x.toString(36)).join(''));
+  return 'p2pt-room-' + (/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(n) && n.length <= 40 ? n : 'x' + cyrb53(n).map(x => x.toString(36)).join(''));
 };
 
 function setSig(text, cls) { $('sigState').textContent = text; $('sigState').className = cls || ''; }
@@ -934,35 +975,50 @@ function setRole() {
 function joinRoom(r) {
   if (typeof Peer === 'undefined') { log('PeerJS を読み込めませんでした。手動モードを使ってください', 'ng'); setSig('PeerJS 読み込み失敗', 'ng'); return; }
   room = r;
-  history.replaceState(null, '', location.pathname + '?room=' + encodeURIComponent(r));
+  try { history.replaceState(null, '', location.pathname + '?room=' + encodeURIComponent(r)); } catch {} // not allowed everywhere (e.g. some file:// setups)
   $('joinBtn').disabled = true; $('leaveBtn').disabled = false; $('room').disabled = true;
-  setSig('接続中…'); setRole();
+  idRetries = 0; signalDead = false; claimFails = 0; queryFails = 0; nextBeaconQuery = 0;
+  setRole();
+  openSignal();
+}
+// (Re)creates the connection to the signalling server. Also used when the first attempt failed for good
+// (PeerJS destroys a peer that could not open) or the server still remembers our id from a moment ago.
+function openSignal() {
+  if (!room) return;
+  lastSignalTry = now();
+  if (peer && !peer.destroyed) { try { peer.destroy(); } catch {} }
+  setSig('接続中…');
   peer = new Peer(me.id, peerOpts());
+  const self = peer; // events of a peer that has been replaced are ignored
   peer.on('open', () => {
+    if (peer !== self) return;
+    idRetries = 0;
     setSig('接続済み', 'ok'); scheduleRender();
     log('シグナリングサーバーに接続しました', 'ok');
     lastBeaconSeen = now();
     tryClaimBeacon(true);
   });
   peer.on('connection', c => {
-    if (!validId(c.peer) || c.peer === me.id) { try { c.close(); } catch {} return; }
+    if (peer !== self || !validId(c.peer) || c.peer === me.id) { try { c.close(); } catch {} return; }
     // The offer came through the signalling server: the sender is in the room, whatever happens to the P2P link.
     const md = c.metadata && typeof c.metadata === 'object' ? c.metadata : {};
     noteSignal(c.peer, md.name);
     if (Array.isArray(md.list)) for (const e of md.list.slice(0, 32)) {
       const [id, nm] = Array.isArray(e) ? e : [e];
-      if (validId(id) && id !== me.id && !members.has(id)) { members.set(id, { name: nm == null ? id : cleanName(nm), color: colorOf(id), rx: now() }); joinTargets.add(id); }
+      if (validId(id) && id !== me.id && !members.has(id)) { members.set(id, { name: nm == null ? id : uniqueName(id, nm), color: colorOf(id), rx: now() }); joinTargets.add(id); }
     }
     const L = new Link({ peerId: c.peer, kind: 'peerjs', initiator: c.peer, conn: c });
     bindConn(L);
   });
   peer.on('disconnected', () => {
+    if (peer !== self || !room) return;
     if (ltRunning()) lt.sigDrops++;
     setSig('切断（再接続します）', 'warn');
     log('シグナリングサーバーから切断。既存の P2P 接続は維持されます', 'warn');
-    setTimeout(() => { if (peer && !peer.destroyed && peer.disconnected) try { peer.reconnect(); } catch {} }, 2000);
+    setTimeout(() => { if (peer === self && !self.destroyed && self.disconnected) { lastSignalTry = now(); try { self.reconnect(); } catch {} } }, 2000);
   });
   peer.on('error', e => {
+    if (peer !== self) return;
     if (e.type === 'peer-unavailable') {
       const id = (e.message.match(/peer (\S+)/) || [])[1];
       const L = id && links.get(id);
@@ -970,7 +1026,12 @@ function joinRoom(r) {
       if (id === beaconIdOf(room)) log('ルーム窓口が見つかりません（しばらくすると誰かが引き継ぎます）', 'warn');
       return;
     }
-    if (e.type === 'unavailable-id') { log('ID が重複しました。再読み込みしてください', 'ng'); return; }
+    if (e.type === 'unavailable-id') {
+      // usually the server has not yet forgotten our previous connection (leave → join again, reload)
+      if (++idRetries <= 4) { log('シグナリングサーバーが前の接続をまだ覚えています。少し待って再接続します'); setTimeout(() => { if (peer === self && room) openSignal(); }, 1500 * idRetries); }
+      else { signalDead = true; log('ID が重複しました。再読み込みしてください', 'ng'); setSig('エラー: ID 重複', 'ng'); }
+      return;
+    }
     log(`シグナリングエラー: ${e.type} ${e.message}`, 'warn');
     if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(e.type)) setSig('エラー: ' + e.type, 'ng');
   });
@@ -982,7 +1043,8 @@ function tryClaimBeacon(queryIfTaken) {
   const bid = beaconIdOf(room);
   const bp = beaconPeer = new Peer(bid, peerOpts());
   bp.on('open', () => {
-    beaconOpen = true; roomBusy = false; lastBeaconSeen = now(); setRole();
+    if (beaconPeer !== bp) return;
+    beaconOpen = true; roomBusy = false; claimFails = 0; lastBeaconSeen = now(); setRole();
     log('ルーム窓口を引き受けました（新しく来た人に参加者一覧を渡す役）');
     sendStatus();
   });
@@ -1002,21 +1064,31 @@ function tryClaimBeacon(queryIfTaken) {
       const list = [me.id, ...[...members].filter(([, m]) => isOnline(m)).map(([id]) => id)];
       try { c.send(JSON.stringify({ t: 'members', list })); } catch {}
     };
-    c.on('open', () => { sendList(); setTimeout(() => c.close(), 3000); });
+    c.on('open', sendList);
+    setTimeout(() => { try { c.close(); } catch {} }, 5000); // also when it never opens (blocked network)
     c.on('data', sendList);
   });
-  bp.on('disconnected', () => setTimeout(() => { if (beaconPeer === bp && !bp.destroyed) try { bp.reconnect(); } catch {} }, 2000));
+  bp.on('disconnected', () => {
+    if (beaconPeer !== bp) return;
+    beaconOpen = false; setRole(); // not reachable for newcomers until the socket is back
+    setTimeout(() => { if (beaconPeer === bp && !bp.destroyed) try { bp.reconnect(); } catch {} }, 2000);
+  });
   bp.on('error', e => {
     if (beaconPeer !== bp) return;
     if (e.type === 'unavailable-id') {
       roomBusy = true;
+      if (!queryIfTaken) claimFails++; // a takeover attempt that found the beacon still held: try less often
       beaconPeer = null; beaconOpen = false; setRole();
       try { bp.destroy(); } catch {}
       // Someone we may not be connected to holds the beacon (e.g. the old holder reloaded and
       // re-claimed it before learning about us): ask it, so separate groups merge into one mesh.
       const holderKnown = [...members.values()].some(m => isOnline(m) && m.status && m.status.beacon);
       if (queryIfTaken || !holderKnown) queryBeacon();
+      return;
     }
+    // any other failure (network, server): PeerJS may have destroyed this peer. Drop it so that the room can
+    // get a beacon again (meshTick clears a destroyed or long-disconnected beacon and the takeover rule applies).
+    log(`ルーム窓口の接続でエラー: ${e.type}`, 'warn');
   });
 }
 function releaseBeacon() {
@@ -1025,26 +1097,23 @@ function releaseBeacon() {
   beaconPeer = null; beaconOpen = false; setRole();
 }
 function queryBeacon() {
-  if (!peer || !peer.open) return;
+  if (!peer || !peer.open || !room || now() < nextBeaconQuery) return; // one query at a time, spaced out
   lastBeaconQuery = now();
+  nextBeaconQuery = lastBeaconQuery + Math.min(30000, 2500 * 2 ** queryFails); // unanswered queries are repeated, but less and less often
   const c = peer.connect(beaconIdOf(room), { serialization: 'raw', metadata: { from: me.id, name: me.name, q: 1 } });
   if (!c) return;
   let answered = false;
-  // no answer (e.g. the list was lost, see tryClaimBeacon): ask again soon instead of waiting for the 10 s check
-  const timer = setTimeout(() => {
-    c.close();
-    if (!answered && room && !beaconOpen && ![...links.values()].some(L => L.isOpen)) queryBeacon();
-  }, 2500);
+  const timer = setTimeout(() => { try { c.close(); } catch {} if (!answered) queryFails++; }, 2500);
   c.on('open', () => { try { c.send(JSON.stringify({ t: 'q' })); } catch {} });
   c.on('data', d => {
     let m; try { m = JSON.parse(d); } catch { return; }
     if (m.t !== 'members' || answered) return;
-    answered = true;
+    answered = true; queryFails = 0;
     lastBeaconSeen = now();
     const others = (Array.isArray(m.list) ? m.list : []).filter(id => validId(id) && id !== me.id).slice(0, 64);
     log(`参加者一覧を取得: ${others.length} 人`);
     for (const id of others) { joinTargets.add(id); if (!members.has(id)) members.set(id, { name: id, color: colorOf(id), rx: now() }); }
-    clearTimeout(timer); c.close();
+    clearTimeout(timer); try { c.close(); } catch {}
     meshTick();
   });
 }
@@ -1082,6 +1151,20 @@ function meshTick() {
       } else L.iceDiscSince = 0;
     }
   }
+  // signalling watchdog: a peer that never opened is destroyed by PeerJS, and a failed reconnect is not retried by itself
+  if (room && peer && !signalDead && t - lastSignalTry > 8000) {
+    if (peer.destroyed) { log('シグナリングサーバーへ接続し直します'); openSignal(); }
+    else if (peer.disconnected) { lastSignalTry = t; try { peer.reconnect(); } catch {} }
+  }
+  // a beacon object that died, or lost its socket for good, must not block the room from getting a new one
+  if (beaconPeer && beaconPeer.destroyed) { beaconPeer = null; beaconOpen = false; setRole(); }
+  if (beaconPeer && beaconPeer.disconnected) { if (!bpDownSince) bpDownSince = t; else if (t - bpDownSince > 12000) { bpDownSince = 0; releaseBeacon(); } } else bpDownSince = 0;
+  if (ltRunning() && !lt.mine && !lt.ending) {
+    const live = liveOthers();
+    if (live.some(([, m]) => m.status.busy === 'lt:' + lt.id) || !live.length) lt.aloneSince = 0;
+    else if (!lt.aloneSince) lt.aloneSince = t;
+    else if (t - lt.aloneSince > 20000) { log('長時間テスト: 他の端末はすでに終了しているため、こちらも集計します'); stopLt(lt.id); }
+  }
   if (!peer || !peer.open || !room) return;
   // connect to everyone we know about (smaller id initiates; new joiners initiate to everyone once)
   for (const [id, m] of members) {
@@ -1099,20 +1182,26 @@ function meshTick() {
   }
   // beacon takeover: if nobody holds it, the smallest online id claims it
   const online = [me.id, ...[...members].filter(([, m]) => isLive(m)).map(([id]) => id)];
-  if ([...members.values()].some(m => isLive(m) && m.status.beacon)) lastBeaconSeen = t;
+  // The holder counts as present while its status is fresh — or while our link to it is open: a holder whose
+  // tab is in the background sends status rarely, but it still holds the id and still answers newcomers.
+  if ([...members].some(([id, m]) => m.status && m.status.beacon && (isLive(m) || (links.get(id) && links.get(id).isOpen)))) { lastBeaconSeen = t; claimFails = 0; }
   if (beaconOpen) lastBeaconSeen = t;
-  if (!beaconPeer && t - lastBeaconSeen > 8000 && t - lastClaimTry > 5000 && online.sort()[0] === me.id) tryClaimBeacon(false);
-  // isolated? ask the room again
-  if (!beaconOpen && ![...links.values()].some(L => L.isOpen) && t - lastBeaconQuery > 10000) queryBeacon();
+  if (!beaconPeer && t - lastBeaconSeen > 8000 && t - lastClaimTry > Math.min(60000, 5000 * 2 ** claimFails) && online.sort()[0] === me.id) tryClaimBeacon(false);
+  // isolated? ask the room again (queryBeacon spaces the retries out)
+  if (!beaconOpen && ![...links.values()].some(L => L.isOpen) && t >= nextBeaconQuery) queryBeacon();
 }
 setInterval(meshTick, 1000);
 setInterval(() => { if ([...links.values()].some(L => L.isOpen)) sendStatus(); }, 2000);
 setInterval(() => { for (const L of links.values()) if (L.isOpen) { L.send({ t: 'sv', ep: epoch, sv: stateVector() }); updateLinkStats(L); } }, 4000);
 
 function leaveRoom() {
+  if (auto && auto.running) { log('自動テストの実行中は退出できません（終わってから退出してください）', 'warn'); return; }
+  if (ltRunning()) stopLt(lt.id);
+  soloClose(); // the stand-in partner must not stay in the room on its own
   for (const L of links.values()) { L.send({ t: 'bye' }); }
   setTimeout(() => {
     for (const L of [...links.values()]) L.close('bye');
+    resetState(0); // board, chat and op log belong to the room that was left
     releaseBeacon();
     if (peer) { try { peer.destroy(); } catch {} peer = null; }
     room = null; roomBusy = false; members.clear(); attempts.clear(); failDiag.clear(); lostTimes.clear(); joinTargets.clear();
@@ -1121,11 +1210,13 @@ function leaveRoom() {
     enableShared(false); scheduleRender();
   }, 100);
 }
+// a page restored from the back/forward cache has destroyed peers and told everyone goodbye: start clean
+window.addEventListener('pageshow', e => { if (e.persisted) location.reload(); });
 window.addEventListener('pagehide', () => {
   for (const L of links.values()) L.send({ t: 'bye' });
   try { beaconPeer && beaconPeer.destroy(); peer && peer.destroy(); } catch {}
 });
-window.addEventListener('online', () => { log('ネットワーク復帰を検知'); if (peer && peer.disconnected && !peer.destroyed) try { peer.reconnect(); } catch {} });
+window.addEventListener('online', () => { log('ネットワーク復帰を検知'); if (peer && peer.disconnected && !peer.destroyed) { lastSignalTry = now(); try { peer.reconnect(); } catch {} } });
 window.addEventListener('offline', () => log('ネットワーク切断を検知', 'warn'));
 
 // =====================================================================
@@ -1169,6 +1260,24 @@ function sameLan(a, b) {
   if (priv(x) && priv(y)) return true;
   return x[0] === y[0] && x[1] === y[1] && x[2] === y[2];
 }
+const privateAddr = a => {
+  if (!a) return false;
+  if (a.includes(':')) return /^f[cde]/i.test(expand6(a)[0] || ''); // link-local / unique-local
+  const o = a.split('.').map(Number);
+  return o[0] === 10 || o[0] === 127 || (o[0] === 172 && o[1] >= 16 && o[1] < 32) || (o[0] === 192 && o[1] === 168) || (o[0] === 169 && o[1] === 254);
+};
+// R relay / H same network / S other network / D direct, but nothing tells which of the two.
+// `site` (public addresses compared) decides when it is known. Without it only strong evidence counts as H:
+// the peer answered from a private address, or both ends used local candidates on the same subnet.
+function classifyRoute(lt, rt, la, ra, site) {
+  if (lt === 'relay' || rt === 'relay') return 'R';
+  const real = a => !!a && !/\.local$/i.test(a);
+  if (lt === 'host' && rt === 'host' && real(la) && real(ra) && privateAddr(la) && privateAddr(ra) && sameLan(la, ra)) return 'H';
+  if (site !== null && site !== undefined) return site ? 'H' : 'S';
+  if (privateAddr(ra) && !/\.local$/i.test(ra)) return 'H';
+  if (lt === 'host' && rt === 'host' && sameLan(la, ra)) return 'H';
+  return 'D';
+}
 async function updateLinkStats(L) {
   const pc = L.pc;
   if (!pc || !L.isOpen) return;
@@ -1176,16 +1285,16 @@ async function updateLinkStats(L) {
     const stats = await pc.getStats();
     let pair = null;
     stats.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId); });
-    if (!pair) stats.forEach(r => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
+    if (!pair) stats.forEach(r => { if (r.type === 'candidate-pair' && r.selected) pair = r; }); // Firefox
+    if (!pair) stats.forEach(r => { if (!pair && r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') pair = r; });
     if (!pair) return;
     const lc = stats.get(pair.localCandidateId), rc = stats.get(pair.remoteCandidateId);
-    const lan = sameLan(lc && (lc.address || lc.ip), rc && (rc.address || rc.ip));
-    let r = routeLetter(lc && lc.candidateType, rc && rc.candidateType, lan);
+    const la = lc && (lc.address || lc.ip), ra = rc && (rc.address || rc.ip);
     // The kind of candidate that happened to win says little (the same path shows up as host or srflx from
     // one attempt to the next). What matters is whether both devices sit behind the same router.
     const site = sameSite(sdpCands(pc.localDescription && pc.localDescription.sdp), sdpCands(pc.remoteDescription && pc.remoteDescription.sdp));
-    if (r !== 'R' && site !== null) r = site ? 'H' : 'S';
-    const far = site === true ? '（同じネットワーク）' : site === false || !lan ? '（別ネットワーク）' : '';
+    const r = classifyRoute(lc && lc.candidateType, rc && rc.candidateType, la, ra, site);
+    const far = r === 'H' ? '（同じネットワーク）' : r === 'S' ? '（別ネットワーク）' : r === 'D' ? '（同じネットワークかは不明）' : '';
     if (r !== L.route) log(`経路 (${L.name}): ${lc && lc.candidateType} ⇄ ${rc && rc.candidateType} / ${lc && lc.protocol}${far}`);
     L.route = r;
     L.routeDetail = `${lc && lc.candidateType}⇄${rc && rc.candidateType} ${lc && lc.protocol || ''}${far}`;
@@ -1200,8 +1309,9 @@ async function updateLinkStats(L) {
 let burst = null;
 function runBurst(m) {
   const t = now();
-  burst = { bid: m.bid, n: m.n, start: t, writeMs: m.n * 5, endLocal: t + m.n * 5 + 200, startOps: ops.size, done: false, from: m.from };
-  $('burstResult').textContent = `一斉書き込み中…（${m.fromName} が開始 / 各端末 ${m.n} 回）`;
+  burst = { bid: m.bid, n: m.n, start: t, writeMs: m.n * 5, endLocal: t + m.n * 5 + 200, startOps: ops.size, done: false, from: m.from,
+    expect: new Set(liveOthers().map(([id]) => id)) }; // who takes part: devices we exchange data with right now
+  $('burstResult').textContent = `一斉書き込み中…（${cleanName(m.fromName)} が開始 / 各端末 ${m.n} 回）`;
   log(`一斉書き込みテスト開始（各端末 ${m.n} 回）`);
   let i = 0;
   const iv = setInterval(() => {
@@ -1217,23 +1327,27 @@ function checkBurst() {
   const t = now();
   if (t < burst.endLocal) return;
   const h = stateHash();
-  const online = [...members.entries()].filter(([, m]) => isOnline(m));
-  const fresh = online.every(([, m]) => m.status && m.rx > burst.endLocal);
-  const same = online.every(([, m]) => m.status && m.status.h === h);
+  // Devices that joined after the start did not write, devices that left cannot answer, and devices without
+  // a data path never could: none of them decides the outcome, but the ones we cannot reach are named.
+  const online = [...members.entries()].filter(([id, m]) => burst.expect.has(id) && isLive(m));
+  const excluded = unreachedNames();
+  const fresh = online.every(([, m]) => m.rx > burst.endLocal);
+  const same = online.every(([, m]) => m.status.h === h);
   const el = $('burstResult');
   const enough = ops.size >= burst.startOps + burst.n * (online.length + 1);
+  const note = excluded.length ? `（未接続のため対象外: ${excluded.join(', ')}）` : '';
   if (fresh && same && enough) {
     burst.done = true;
     // time from the end of this device's writes (writing itself takes n × 5 ms)
     const sec = ((t - burst.start - burst.writeMs) / 1000).toFixed(1), wsec = (burst.writeMs / 1000).toFixed(1);
-    burst.result = { ok: true, sec: Number(sec), writeSec: Number(wsec), devices: online.length + 1, n: burst.n };
-    el.innerHTML = `<b class="ok">✅ ${online.length + 1} 台すべて一致</b> — 書き込み完了から ${sec} 秒で収束（書き込み ${wsec} 秒, 操作 ${ops.size} 件, ハッシュ ${h}）`;
-    log(`一斉書き込みテスト: ${online.length + 1} 台で一致（書き込み完了から ${sec} 秒）`, 'ok');
+    burst.result = { ok: true, sec: Number(sec), writeSec: Number(wsec), devices: online.length + 1, n: burst.n, excluded };
+    el.innerHTML = `<b class="ok">✅ ${online.length + 1} 台すべて一致</b> — 書き込み完了から ${sec} 秒で収束（書き込み ${wsec} 秒, 操作 ${ops.size} 件, ハッシュ ${h}）${esc(note)}`;
+    log(`一斉書き込みテスト: ${online.length + 1} 台で一致（書き込み完了から ${sec} 秒）${note}`, 'ok');
   } else if (t - burst.start > 60000) {
     burst.done = true;
-    const bad = online.filter(([, m]) => !m.status || m.status.h !== h).map(([, m]) => m.name);
-    burst.result = { ok: false, bad, devices: online.length + 1, n: burst.n };
-    el.innerHTML = `<b class="ng">⚠ 60 秒経っても不一致</b>: ${esc(bad.join(', '))}`;
+    const bad = online.filter(([, m]) => m.status.h !== h).map(([, m]) => m.name);
+    burst.result = { ok: false, bad, devices: online.length + 1, n: burst.n, excluded };
+    el.innerHTML = `<b class="ng">⚠ 60 秒経っても${bad.length ? '不一致' : '書き込みがそろわない'}</b>${bad.length ? ': ' + esc(bad.join(', ')) : ''}${esc(note)}`;
     log('一斉書き込みテスト: 60 秒以内に収束せず', 'ng');
   }
 }
@@ -1246,12 +1360,13 @@ $('burstBtn').onclick = () => {
 };
 $('clearBtn').onclick = () => {
   if (!confirm('マス目・チャット・操作ログを全端末で消去しますか？')) return;
+  if (epoch >= 1e9 - 1) return;
   adoptEpoch(epoch + 1, null);
   log(`共有データを全消去しました（操作ログも破棄）`);
 };
 
 // ---------- Realtime test (game-like traffic) ----------
-const wallNow = () => performance.timeOrigin + performance.now();
+const wallNow = () => Date.now(); // the system clock (performance.now() can stop while a device sleeps)
 const seenFlood = new Set();
 const RT_ID = 100; // negotiated SCTP stream id for the unreliable channel
 function setupRtChannel(L) {
@@ -1282,7 +1397,7 @@ function startRt(m) {
   rt = { id: m.id, rate: m.rate, size: m.size, dur: m.dur, start: now(), seq: 0, peers: new Map(), rx: new Map(),
     lastTick: now(), maxTickGap: 0, done: false, hid: document.hidden, pad: 'x'.repeat(Math.max(0, m.size - 70)) };
   const peersNow = [...links.values()].filter(L => L.isOpen).length;
-  log(`リアルタイムテスト開始: ${m.rate} 回/秒 × ${m.size} B × ${m.dur} 秒（${m.fromName} が開始, 直接接続 ${peersNow}）`);
+  log(`リアルタイムテスト開始: ${m.rate} 回/秒 × ${m.size} B × ${m.dur} 秒（${cleanName(m.fromName)} が開始, 直接接続 ${peersNow}）`);
   $('rtStatus').textContent = `計測中…（${m.dur} 秒）`;
   const run = rt;
   const tick = () => {
@@ -1314,7 +1429,7 @@ function onRtMsg(L, k, m) {
     if (rt && rt.id === m.id && !rt.done) { // receive smoothness
       const key = L.peerId + k, t = now();
       const r = rt.rx.get(key) || { last: 0, maxGap: 0, stalls: 0 };
-      if (r.last) { const g = t - r.last; r.maxGap = Math.max(r.maxGap, g); if (g > 100) r.stalls++; }
+      if (r.last) { const g = t - r.last; r.maxGap = Math.max(r.maxGap, g); if (g > Math.max(100, 2500 / rt.rate)) r.stalls++; }
       r.last = t; rt.rx.set(key, r);
     }
   } else if (m.t === 'rq') {
@@ -1326,7 +1441,7 @@ function onRtMsg(L, k, m) {
     st.pend.delete(m.s);
     const rtt = now() - p.t;
     st.rtts.push(rtt);
-    st.offs.push({ rtt, off: m.w - (p.w + rtt / 2) });
+    if (num(m.w) != null) st.offs.push({ rtt, off: m.w - (p.w + rtt / 2) });
   }
 }
 const pct = (a, q) => a.length ? a[Math.min(a.length - 1, Math.floor(q * a.length))] : null;
@@ -1363,10 +1478,12 @@ function storeRtResult(m) {
 }
 let rtLatest = null;
 function verdict(r) {
-  if (!r || r.p95 == null) return '-';
+  if (!r) return '-';
+  if (r.loss != null && r.loss >= 50) return '× ほとんど届かない';
+  if (r.p95 == null) return '-';
   if (r.p95 < 50 && r.loss < 1) return '◎ アクション可';
   if (r.p95 < 100 && r.loss < 3) return '○ リアルタイム可';
-  if (r.p95 < 100) return '△ ロス多め（確実モードなら可）';
+  if (r.p95 < 100) return '△ ロス多め（再送なしの通信には不向き）';
   if (r.p95 < 200) return '△ ゆっくり同期' + (r.loss >= 3 ? '・ロス多め' : '');
   return '× ターン制向け';
 }
@@ -1427,7 +1544,7 @@ function startLt(m) {
   }
   if (rt && !rt.done) { log('リアルタイムテスト中のため長時間テストは開始しません', 'warn'); return; }
   const t = now();
-  lt = { id: m.id, dur: m.dur, win: m.win, start: t, seq: 0, peers: new Map(), lastTick: t, maxTickGap: 0, hid: document.hidden,
+  lt = { id: m.id, dur: m.dur, planned: m.dur, win: m.win, start: t, seq: 0, peers: new Map(), lastTick: t, maxTickGap: 0, hid: document.hidden,
     sigDrops: 0, nextWin: t + m.win * 1000, done: false, ending: false };
   for (const L of links.values()) if (L.isOpen) ltPeer(lt, L);
   ltLatest = m.id;
@@ -1454,8 +1571,9 @@ function ltTick(run) {
   for (const L of links.values()) if (L.isOpen) ltPeer(run, L); // include peers that connect later
   for (const [pid, P] of run.peers) {
     const L = links.get(pid), up = !!(L && L.isOpen);
+    if (!up && P.left) { P.up = false; P.downSince = 0; continue; } // left the room: nothing to measure, nothing to blame
     if (!up) { if (P.up) { P.up = false; P.drops++; P.downSince = t; } P.w.down = true; continue; }
-    if (!P.up) { P.up = true; P.downMs += t - P.downSince; P.downSince = 0; P.lastRx = 0; }
+    if (!P.up) { if (P.downSince) P.downMs += t - P.downSince; P.up = true; P.left = false; P.downSince = 0; P.lastRx = 0; }
     const k = L.rtdc && L.rtdc.readyState === 'open' ? 'u' : 'r';
     if (rtSend(L, k, { t: 'lp', id: run.id, s, p: LT_PAD })) { P.sent++; P.w.sent++; P.pend.set(s, t); }
   }
@@ -1496,26 +1614,32 @@ function finishLt(run) {
   try { wakeLock && wakeLock.release(); } catch {} wakeLock = null;
   const t = now(), rows = [];
   for (const P of run.peers.values()) {
-    if (!P.up) P.downMs += t - P.downSince;
+    if (!P.up && !P.left && P.downSince) P.downMs += t - P.downSince;
     if (P.w.sent || P.w.down) ltCloseWin(P);
     const a = P.rtts.sort((x, y) => x - y);
     rows.push({ to: P.name, sent: P.sent, got: P.got, loss: P.sent ? Math.max(0, (1 - P.got / P.sent) * 100) : null,
       p50: pct(a, .5), p95: pct(a, .95), p99: pct(a, .99), max: a.length ? a[a.length - 1] : null,
-      stalls: P.stalls, maxGap: Math.round(P.maxGap), drops: P.drops, downMs: Math.round(P.downMs), lost: !P.up, bad: P.bad, wins: P.tl.length, tl: P.tl.join('').slice(0, 240) });
+      stalls: P.stalls, maxGap: Math.round(P.maxGap), drops: P.drops, downMs: Math.round(P.downMs), lost: !P.up && !P.left, left: !!P.left, bad: P.bad, wins: P.tl.length, tl: P.tl.join('').slice(0, 240) });
   }
-  const msg = { t: 'ltres', id: run.id, from: me.id, name: me.name, dur: Math.round(run.ran || 0), win: run.win, tickGap: Math.round(run.maxTickGap),
+  const msg = { t: 'ltres', id: run.id, from: me.id, name: me.name, dur: Math.round(run.ran || 0), planned: run.planned, win: run.win, tickGap: Math.round(run.maxTickGap),
     hidden: run.hid || document.hidden, sig: run.sigDrops, rows };
   seenFlood.add('lr' + run.id + me.id);
   for (const L of links.values()) if (L.isOpen) L.send(msg);
   storeLtResult(msg);
   $('ltStatus').textContent = `完了（${mmss(msg.dur)}）。他の端末の結果も届き次第表示されます`;
+  // The starter normally publishes the room result. If it left, the smallest remaining id does it instead.
+  if (!run.mine) setTimeout(() => {
+    if (seenFlood.has('arL' + run.id)) return;
+    const holders = [me.id, ...liveOthers().map(([pid]) => pid).filter(pid => (ltResults.get(run.id) || new Map()).has(pid))];
+    if (holders.sort()[0] === me.id) { log('長時間テスト: 開始した端末がいないため、この端末が結果をまとめます'); publishLong(run.id); }
+  }, 20000);
   log(`長時間テスト完了（${mmss(msg.dur)}）: 切断 ${rows.reduce((n, r) => n + r.drops, 0)} 回 / 不調の区間 ${rows.reduce((n, r) => n + r.bad, 0)}`, 'ok');
 }
 function cleanLt(m) {
   const rows = m.rows.slice(0, 128).filter(r => r && typeof r === 'object').map(r => ({ to: cleanName(r.to), sent: num(r.sent) || 0, got: num(r.got) || 0,
     loss: num(r.loss), p50: num(r.p50), p95: num(r.p95), p99: num(r.p99), max: num(r.max), stalls: num(r.stalls) || 0, maxGap: num(r.maxGap) || 0,
-    drops: num(r.drops) || 0, downMs: num(r.downMs) || 0, lost: !!r.lost, bad: num(r.bad) || 0, wins: num(r.wins) || 0, tl: txt(r.tl).replace(/[^.^x]/g, '').slice(0, 240) }));
-  return { t: 'ltres', id: m.id, from: m.from, name: cleanName(m.name), dur: num(m.dur) || 0, win: num(m.win) || 60, tickGap: num(m.tickGap) || 0,
+    drops: num(r.drops) || 0, downMs: num(r.downMs) || 0, lost: !!r.lost, left: !!r.left, bad: num(r.bad) || 0, wins: num(r.wins) || 0, tl: txt(r.tl).replace(/[^.^x]/g, '').slice(0, 240) }));
+  return { t: 'ltres', id: m.id, from: m.from, name: cleanName(m.name), dur: num(m.dur) || 0, planned: num(m.planned) || 0, win: num(m.win) || 60, tickGap: num(m.tickGap) || 0,
     hidden: !!m.hidden, sig: num(m.sig) || 0, rows };
 }
 function storeLtResult(m) {
@@ -1534,7 +1658,7 @@ function renderLt() {
     for (const r of m.rows) {
       h += `<tr><td>${esc(m.name)} → ${esc(r.to)}</td><td>${r.sent && r.loss != null ? (100 - r.loss).toFixed(1) + '%' : '-'}</td><td>${f0(r.p50)}</td><td>${f0(r.p95)}</td><td>${f0(r.p99)}</td><td>${f0(r.max)}</td>
         <td>${r.stalls}${r.maxGap > 250 ? ` <span class="hint">(最大${f0(r.maxGap)})</span>` : ''}</td>
-        <td class="${r.lost ? 'ng' : r.drops ? 'warn' : ''}">${r.drops} 回${r.lost ? '（復帰せず）' : ''}</td><td>${r.downMs ? (r.downMs / 1000).toFixed(1) + ' 秒' : '-'}</td>
+        <td class="${r.lost ? 'ng' : r.drops ? 'warn' : ''}">${r.drops} 回${r.lost ? '（復帰せず）' : r.left ? '（途中で退出）' : ''}</td><td>${r.downMs ? (r.downMs / 1000).toFixed(1) + ' 秒' : '-'}</td>
         <td class="mono">${[...r.tl].map(c => TL_HTML[c] || '').join('')}</td></tr>`;
     }
     if (m.hidden || m.tickGap > 1000) h += `<tr><td colspan="10" class="warn">${esc(m.name)}: ${m.hidden ? '計測中に画面が非表示になりました。' : ''}送信タイマーが最大 ${f0(m.tickGap)}ms 止まりました（この端末が関わる行は参考値）</td></tr>`;
@@ -1546,11 +1670,15 @@ function renderLt() {
 // Verdict for the whole room, in the same format as an auto-test result (so it is saved, shared and comparable).
 function buildLongResult(id) {
   const map = ltResults.get(id) || new Map(), res = [...map.values()];
-  const rows = res.flatMap(x => x.rows.map(r => Object.assign({ from: x.name }, r)));
-  const missing = onlineOthers().filter(([pid]) => !map.has(pid)).map(([, m]) => m.name);
+  const others = testOthers(), ids = new Set(others.map(([id]) => id)), solo = others.length > 0 && others.every(([, m]) => isSub(m));
+  const names = new Set(others.map(([, m]) => m.name).concat(me.name));
+  // rows about a stand-in partner are dropped when real devices took part
+  const rows = res.filter(x => x.from === me.id || ids.has(x.from) || !members.has(x.from)).flatMap(x => x.rows.filter(r => names.has(r.to) || r.left || r.lost).map(r => Object.assign({ from: x.name, fid: x.from }, r)));
+  const missing = others.filter(([pid]) => !map.has(pid)).map(([, m]) => m.name);
+  const planned = Math.max(0, ...res.map(x => x.planned || 0));
   const bgs = res.filter(x => x.hidden || x.tickGap > 1000).map(x => x.name);
   const mx = f => Math.max(0, ...rows.map(r => r[f] || 0));
-  const pair = r => [r.from, r.to].sort().join('⇄');
+  const pair = r => [r.from, r.to].sort().join('⇄'); // names are made unique per device (uniqueName)
   const lost = [...new Set(rows.filter(r => r.lost).map(pair))], dropped = [...new Set(rows.filter(r => r.drops).map(pair))];
   // slow/lossy windows only: a drop that recovered is judged by its downtime, not by the windows it touched
   const badFrac = Math.max(0, ...rows.map(r => r.wins ? (r.tl.match(/\^/g) || []).length / r.wins : 0));
@@ -1560,26 +1688,29 @@ function buildLongResult(id) {
   if (dropped.length) notes.push(`途中で切断: ${dropped.join(', ')}（最長不通 ${(mx('downMs') / 1000).toFixed(1)} 秒）`);
   if (badFrac > 0) notes.push(`遅延・ロスの出た区間が最大 ${(badFrac * 100).toFixed(0)}%`);
   if (gap > 1000) notes.push(`受信が最大 ${(gap / 1000).toFixed(1)} 秒止まった`);
+  const leftNames = [...new Set(rows.filter(r => r.left).map(r => r.to))];
+  if (leftNames.length) notes.push(`途中で退出した端末あり（${leftNames.join(', ')}）`);
   if (bgs.length) notes.push(`画面が非表示/停止した端末あり（${bgs.join(', ')}）→ 参考値`);
   if (missing.length) notes.push(`結果なし: ${missing.join(', ')}`);
-  const status = !rows.length ? 'na' : lost.length || loss >= 10 || badFrac > 0.2 || downFrac > 0.05 ? 'ng' : notes.length ? 'cond' : 'ok';
+  if (planned && dur < planned * 0.9) notes.push(`途中で中止（予定 ${mmss(planned)} のうち ${mmss(dur)}）`);
+  const status = !rows.length || solo ? 'na' : lost.length || loss >= 10 || badFrac > 0.2 || downFrac > 0.05 ? 'ng' : notes.length ? 'cond' : 'ok';
   const base = `${mmss(dur)}・${res.length} 台｜最悪の組: p95 ${f0(p95)}ms / ロス ${loss.toFixed(1)}%`;
   const caps = [
-    { key: 'long', title: '長時間の安定性（ゲーム 1 回分）', status, reason: !rows.length ? '相手がいないため未検証' : base + (notes.length ? '｜' + notes.join('｜') : '｜切断・不調なし') },
-    { key: 'longdrop', title: '長時間中の切断と自動復帰', status: !rows.length ? 'na' : lost.length ? 'ng' : dropped.length ? 'cond' : 'ok',
-      reason: !rows.length ? '未検証' : lost.length ? `復帰しなかった: ${lost.join(', ')}` : dropped.length ? `${dropped.length} 組で切断 → すべて自動復帰（最長不通 ${(mx('downMs') / 1000).toFixed(1)} 秒）` : '切断なし' },
+    { key: 'long', title: '長時間の安定性（ゲーム 1 回分）', status, reason: !rows.length ? '相手がいないため未検証' : (solo ? '1 台テスト（仮の相手）では未検証｜' : '') + base + (notes.length ? '｜' + notes.join('｜') : '｜切断・不調なし') },
+    { key: 'longdrop', title: '長時間中の切断と自動復帰', status: !rows.length || solo ? 'na' : lost.length ? 'ng' : dropped.length ? 'cond' : 'na',
+      reason: !rows.length ? '未検証' : lost.length ? `復帰しなかった: ${lost.join(', ')}` : dropped.length ? `${dropped.length} 組で切断 → すべて自動復帰（最長不通 ${(mx('downMs') / 1000).toFixed(1)} 秒）` : '切断は起きなかった（自動復帰は確認する機会がなかった）' },
   ];
   const steps = rows.slice(0, 58).map(r => ({ title: `${r.from} → ${r.to}`, status: r.lost ? 'fail' : r.drops || r.bad || r.maxGap > 1000 ? 'warn' : 'pass',
     detail: `受信率 ${r.loss != null ? (100 - r.loss).toFixed(1) : '-'}% / p95 ${f0(r.p95)}ms / 最大 ${f0(r.max)}ms / 途切れ ${r.stalls} 回（最大 ${f0(r.maxGap)}ms）/ 切断 ${r.drops} 回（不通 ${(r.downMs / 1000).toFixed(1)} 秒）/ 経過 ${r.tl.replace(/\./g, '·').replace(/\^/g, '▲').replace(/x/g, '×')}` }));
-  return JSON.parse(maskIps(JSON.stringify({
+  return maskDeep(({
     v: 1, build: BUILD, id: 'L' + id, ts: Date.now(), label: $('autoLabel').value.trim(), profile: 'long', by: me.name,
     device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
     room, participants: [me.name, ...res.filter(x => x.from !== me.id).map(x => x.name)], steps, caps,
     metrics: { long: { dur, devices: res.length, p95, loss, maxGap: gap, badFrac, lost, dropped, bg: bgs, missing, rows } },
-  })));
+  }));
 }
 async function startLongAll(opts = {}) {
-  if (ltRunning() || autoBusy()) return null;
+  if (ltRunning() || autoBusy() || othersInLong()) return null;
   const m = { t: 'ltstart', id: rand(8), dur: opts.dur || Number($('ltDur').value), win: opts.win || 60, fromName: me.name };
   seenFlood.add('ls' + m.id);
   for (const L of links.values()) if (L.isOpen) L.send(m);
@@ -1589,8 +1720,11 @@ async function startLongAll(opts = {}) {
   run.mine = true;
   await waitFor(() => run.done, (m.dur + 10) * 1000, 300);
   if (run.dropped) return null; // another device started at the same moment and its run was kept
-  await waitFor(() => ltResults.get(m.id) && ltResults.get(m.id).size >= 1 + onlineOthers().length, 12000, 300);
-  const result = buildLongResult(m.id);
+  await waitFor(() => ltResults.get(m.id) && ltResults.get(m.id).size >= 1 + liveOthers().length, 12000, 300);
+  return publishLong(m.id);
+}
+function publishLong(id) {
+  const result = buildLongResult(id);
   saveResult(result);
   seenFlood.add('ar' + result.id);
   for (const L of links.values()) if (L.isOpen) L.send({ t: 'autores', result });
@@ -1609,7 +1743,7 @@ $('ltStop').onclick = () => {
   stopLt(m.id);
 };
 function updateTestButtons() {
-  const a = autoBusy(), r = !!(rt && !rt.done), l = ltRunning();
+  const a = autoBusy() || othersInLong(), r = !!(rt && !rt.done), l = ltRunning();
   $('ltBtn').disabled = !enabled || a || r || l; $('ltStop').disabled = !l;
   $('rtBtn').disabled = !enabled || a || r || l;
   $('burstBtn').disabled = !enabled || a;
@@ -1624,6 +1758,7 @@ setInterval(() => {
   lastBeat = now();
 }, 250);
 document.addEventListener('visibilitychange', () => { if (document.hidden && rt && !rt.done) rt.hid = true; if (document.hidden && ltRunning()) lt.hid = true; });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && ltRunning()) { try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wakeLock = w; }).catch(() => {}); } catch {} } });
 document.addEventListener('visibilitychange', () => log(document.hidden ? 'ページが非表示になりました（バックグラウンド）' : 'ページが再表示されました'));
 
 async function speedTest(L, mbArg) {
@@ -1679,9 +1814,24 @@ function natSymmetric(list, hostUdp) {
     if (!fam.get(f).has(k)) fam.get(f).set(k, new Set());
     fam.get(f).get(k).add(c.addr + ':' + c.port);
   }
-  const socketsPerFamily = Math.max(1, hostUdp - (fam.size - 1));
-  for (const bases of fam.values()) for (const [k, set] of bases) if (set.size > (k ? 1 : socketsPerFamily)) return true;
+  // With a hidden base the mappings cannot be tied to a socket; a device normally has one per family, so two
+  // mappings in one family are reported (as a possibility — a second network interface looks the same).
+  for (const bases of fam.values()) for (const set of bases.values()) if (set.size > 1) return true;
   return false;
+}
+// Does this one STUN server answer? (Browsers merge identical mappings, so a single srflx candidate from a
+// two-server configuration can mean "both agree" or "only one answered": they have to be asked one by one.)
+async function stunAnswers(server, url) {
+  let ok = false, pc;
+  try {
+    pc = new RTCPeerConnection({ iceServers: [Object.assign({}, server, { urls: url })] });
+    pc.onicecandidate = e => { if (e.candidate && / typ srflx/.test(e.candidate.candidate)) ok = true; };
+    pc.createDataChannel('probe');
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitFor(() => ok || pc.iceGatheringState === 'complete', 3000, 50);
+  } catch {}
+  try { pc && pc.close(); } catch {}
+  return ok;
 }
 async function runDiag() {
   const servers = CFG.ice;
@@ -1700,7 +1850,11 @@ async function runDiag() {
   await new Promise(r => {
     const iv = setInterval(() => {
       const t = now();
-      if (pc.iceGatheringState === 'complete' || t - t0 > 8000 || (lastCand && t - lastCand > 3000)) { clearInterval(iv); r(); }
+      // going quiet only ends the wait once every configured kind of server has produced something:
+      // a slow STUN/TURN answer must not be reported as "no answer"
+      const kinds = cands.map(c => (c.candidate.match(/ typ (\w+)/) || [])[1]);
+      const waiting = (stunCount && !kinds.includes('srflx')) || (hasTurn && !kinds.includes('relay'));
+      if (pc.iceGatheringState === 'complete' || t - t0 > 8000 || (lastCand && !waiting && t - lastCand > 3000)) { clearInterval(iv); r(); }
     }, 100);
   });
   const ms = now() - t0;
@@ -1715,21 +1869,30 @@ async function runDiag() {
   // NAT type hint: same local socket mapped to different public ports by different STUN servers => symmetric
   const hostUdp = host.filter(c => (c.protocol || '').toLowerCase() !== 'tcp').length;
   const symmetric = natSymmetric(srflx.map(c => ({ addr: addrOf(c), port: portOf(c), base: relPort(c) })), hostUdp);
-  return { ms: Math.round(ms), stunCount, hasTurn, host: host.length, srflx: srflx.length, relay: relay.length, symmetric,
-    natKnown: stunCount >= 2, v6: srflx.some(c => addrOf(c).includes(':')), errors: errors.slice(0, 5).map(maskIps),
+  // the NAT type is only known if at least two servers answered
+  let answering = srflx.length ? 1 : 0;
+  if (srflx.length && stunCount >= 2 && !symmetric) {
+    const list = [];
+    for (const sv of servers) for (const u of [].concat(sv.urls || [])) if (/^stuns?:/.test(u)) list.push([sv, u]);
+    answering = (await Promise.all(list.slice(0, 4).map(([sv, u]) => stunAnswers(sv, u)))).filter(Boolean).length;
+  } else if (symmetric) answering = 2;
+  const globalV6 = a => !!a && a.includes(':') && /^[23]/.test(expand6(a)[0] || '');
+  return { ms: Math.round(now() - t0), stunCount, hasTurn, host: host.length, srflx: srflx.length, relay: relay.length, symmetric,
+    natKnown: answering >= 2, stunAnswering: answering, v6: [...srflx, ...host].some(c => globalV6(addrOf(c))), errors: errors.slice(0, 5).map(maskIps),
     hostHidden: host.length > 0 && host.every(c => /\.local$/i.test(addrOf(c) || '')) };
 }
 function natText(d) {
   if (!d.stunCount) return 'STUN 未設定（同じネットワーク内のみ）';
-  if (!d.srflx) return 'STUN 応答なし（UDP が塞がれている可能性）';
+  if (!d.srflx) return d.v6 ? 'STUN で公開アドレスを確認できない（この端末は IPv6 のグローバルアドレスを直接持っている）' : 'STUN 応答なし（UDP が塞がれている可能性）';
   if (d.symmetric) return '対称型 NAT の可能性（相手次第で直接接続が困難）';
-  return d.natKnown ? 'Cone 型 NAT（直接接続できる可能性が高い）' : 'STUN 応答あり（NAT 種別は STUN 2 台以上で判定）';
+  if (d.natKnown) return 'Cone 型 NAT（直接接続できる可能性が高い）';
+  return d.stunCount >= 2 ? `STUN 応答あり（${d.stunCount} 台中 ${d.stunAnswering || 1} 台だけ応答したため、NAT の種類は判定できない）` : 'STUN 応答あり（NAT 種別は STUN 2 台以上で判定）';
 }
 $('diagBtn').onclick = async () => {
   const out = $('diagOut');
   out.innerHTML = '<dt>状態</dt><dd>候補を収集中…（数秒かかります）</dd>';
   const d = await runDiag();
-  const cls = !d.stunCount ? '' : !d.srflx ? 'ng' : d.symmetric ? 'warn' : 'ok';
+  const cls = !d.stunCount ? '' : !d.srflx ? 'ng' : d.symmetric || !d.natKnown ? 'warn' : 'ok';
   out.innerHTML = `
     <dt>収集時間</dt><dd>${(d.ms / 1000).toFixed(1)} 秒</dd>
     <dt>host 候補</dt><dd>${d.host} 件（ローカル IP: ${!d.host ? '-' : d.hostHidden ? '相手に非公開。同じ LAN でつながらないときは「LAN 内の直接接続を助ける」を試す' : '相手に伝わる'}）</dd>
@@ -1750,6 +1913,13 @@ $('lanBtn').onclick = async () => {
   } catch (e) {
     $('lanState').textContent = '許可されませんでした';
     log(`マイクの許可が得られませんでした（${e.name}）。端末の設定や管理ポリシーで禁止されている場合、この方法は使えません`, 'warn');
+    return;
+  }
+  let hidden = true;
+  try { hidden = (await runDiag()).hostHidden; } catch {}
+  if (hidden) {
+    $('lanState').textContent = '許可されましたが、ローカル IP は隠れたままです';
+    log('マイクは許可されましたが、このブラウザではローカル IP が相手に伝わるようになりませんでした（この方法は使えません）', 'warn');
     return;
   }
   lanAssist = true;
@@ -1796,6 +1966,7 @@ $('mkOffer').onclick = async () => {
   await L._pc.setLocalDescription(await L._pc.createOffer());
   $('localSdp').value = '候補を収集中…';
   await waitGathering(L._pc);
+  if (manualLink !== L || L.closed) return;
   $('localSdp').value = encode(L._pc.localDescription);
   log('オファー作成完了。相手に送ってください', 'ok');
 };
@@ -1811,6 +1982,7 @@ $('applyRemote').onclick = async () => {
       await L._pc.setLocalDescription(await L._pc.createAnswer());
       $('localSdp').value = '候補を収集中…';
       await waitGathering(L._pc);
+      if (manualLink !== L || L.closed) return;
       $('localSdp').value = encode(L._pc.localDescription);
       log('アンサー作成完了。相手（A）に返してください', 'ok');
     } else if (d.type === 'answer') {
@@ -1849,13 +2021,13 @@ function enableShared(on) {
 }
 // allow solo use too once in a room / linked
 function sendChat() {
-  const v = $('msg').value.trim();
+  const v = $('msg').value.trim().slice(0, 2000);
   if (!v) return;
   localOp({ k: 'm', v, n: me.name, col: me.color });
   $('msg').value = '';
 }
 $('send').onclick = sendChat;
-$('msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) sendChat(); });
+$('msg').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) sendChat(); });
 
 const routeCell = info => {
   if (!info) return '<span class="hint">·</span>';
@@ -1863,7 +2035,7 @@ const routeCell = info => {
   if (r === 'c' || r === '-') return '…';
   if (r === 'x') return `<span class="ng">×</span><small>${info.n || ''}回</small>`;
   const cls = r === 'R' ? 'warn' : 'ok';
-  return `<b class="${cls}">${r}</b><small>${info.rtt != null ? info.rtt + 'ms' : ''}</small>`;
+  return `<b class="${cls}">${esc(r)}</b><small>${info.rtt != null ? info.rtt + 'ms' : ''}</small>`;
 };
 function render() {
   renderQueued = false;
@@ -1895,24 +2067,25 @@ function render() {
     const h = s ? s.h : '?';
     html += `<td class="mono ${h === myH ? 'ok' : 'ng'}">${esc(h)}</td><td class="mono">${s && s.n != null ? s.n : '?'}</td></tr>`;
   }
-  $('matrix').innerHTML = html;
+  if ($('matrix').__h !== html) { $('matrix').innerHTML = html; $('matrix').__h = html; }
   // banner
   const onlineOthers = rows.slice(1).filter(([, m]) => isOnline(m));
   const banner = $('syncBanner');
   if (!room && !links.size) { banner.className = 'banner'; banner.textContent = 'ルームに参加してください'; }
   else if (!onlineOthers.length && room && !(peer && peer.open)) { banner.className = 'banner ng'; banner.textContent = 'シグナリングサーバーに接続できていません（ログを確認。手動モードなら接続可能）'; }
-  else if (!onlineOthers.length && roomBusy && !beaconOpen) { banner.className = 'banner ng'; banner.textContent = `ルーム「${room || ''}」には他の端末がいますが、接続できていません（相手が古い版のファイルか、端末同士の通信が止められている可能性。下の「相手が出てこない・つながらないとき」を参照）`; }
+  else if (!onlineOthers.length && roomBusy && !beaconOpen) { banner.className = 'banner warn'; banner.textContent = `ルーム「${room || ''}」には他の端末がいますが、接続できていません（直前に閉じた接続の残りか、相手が古い版のファイルの可能性。しばらく待っても変わらなければ「相手が出てこない・つながらないとき」を参照）`; }
   else if (!onlineOthers.length) { banner.className = 'banner warn'; banner.textContent = `自分だけです。他の端末で同じルーム「${room || ''}」に参加してください`; }
   else {
     const mismatch = onlineOthers.filter(([, m]) => !m.status || m.status.h !== myH);
     const direct = onlineOthers.filter(([id]) => links.get(id) && links.get(id).isOpen).length;
     const unreach = onlineOthers.filter(([id, m]) => !m.status && !(links.get(id) && links.get(id).isOpen));
     const failing = unreach.filter(([id]) => (attempts.get(id) || {}).f);
-    if (failing.length && !direct) { banner.className = 'banner ng'; banner.textContent = `相手（${failing.map(([, m]) => m.name).join(', ')}）は見つかりましたが、直接つながりません。端末同士の通信がネットワークで止められている可能性があります（下の「相手が出てこない・つながらないとき」を参照）`; $('helpBox').open = true; }
-    else if (unreach.length && !direct) { banner.className = 'banner warn'; banner.textContent = `相手（${unreach.map(([, m]) => m.name).join(', ')}）を見つけました。接続中…`; }
+    if (failing.length) { banner.className = 'banner ng'; banner.textContent = `相手（${failing.map(([, m]) => m.name).join(', ')}）は見つかりましたが、直接つながりません${direct ? `（他の ${direct} 台とは接続済み）` : ''}。端末同士の通信がネットワークで止められている可能性があります（下の「相手が出てこない・つながらないとき」を参照）`; if (!banner.__failing) $('helpBox').open = true; }
+    else if (unreach.length) { banner.className = 'banner warn'; banner.textContent = `相手（${unreach.map(([, m]) => m.name).join(', ')}）を見つけました。接続中…`; }
     else if (mismatch.length) { banner.className = 'banner warn'; banner.textContent = `${onlineOthers.length + 1} 台中 ${mismatch.length} 台が同期中/不一致（${mismatch.map(([, m]) => m.name).join(', ')}）`; }
     else { banner.className = 'banner ok'; banner.textContent = `✅ ${onlineOthers.length + 1} 台すべて同期済み（直接接続 ${direct}/${onlineOthers.length}）`; }
   }
+  banner.__failing = banner.className === 'banner ng' && /直接つながりません/.test(banner.textContent);
   // reasons for peers that are known but not connected
   const whys = onlineOthers.filter(([id]) => !(links.get(id) && links.get(id).isOpen) && (attempts.get(id) || {}).f && failDiag.has(id))
     .map(([id, m]) => `<div><b>${esc(m.name)}</b>: ${esc(diagReason(failDiag.get(id)))}</div>`).join('');
@@ -1930,7 +2103,7 @@ function render() {
       <td>${reconnectCount.get(L.peerId) || 0}${L.recovery ? ` <span class="hint">(${L.recovery})</span>` : ''}</td><td>${esc(L.tpResult || '')}</td>
       <td>${L.isOpen ? `<button class="small" data-tp="${esc(L.peerId)}" ${L.tp ? 'disabled' : ''}>速度</button> <button class="small" data-cut="${esc(L.peerId)}">切断</button>` : ''}</td></tr>`;
   }
-  $('links').innerHTML = lh;
+  if ($('links').__h !== lh) { $('links').innerHTML = lh; $('links').__h = lh; }
 }
 $('links').addEventListener('click', e => {
   const tp = e.target.dataset.tp, cut = e.target.dataset.cut;
@@ -2004,44 +2177,67 @@ async function turnCheck() {
 const turnText = t => t.per.map(x => `${x.label} ${x.ok ? '○ ' + x.ms + 'ms' : '×'}`).join(' / ');
 const myLinksView = () => linksView();
 const onlineOthers = () => [...members.entries()].filter(([, m]) => isOnline(m));
+const isSub = m => !!(m.status && m.status.sub);
+// The devices a room-wide test is about. A stand-in partner (one-device test, possibly someone else's) only
+// counts when there is nobody else: next to real devices it would add an in-device pair to every result.
+const testOthers = () => { const o = onlineOthers(); return o.some(([, m]) => !isSub(m)) ? o.filter(([, m]) => !isSub(m)) : o; };
+const testIds = () => new Set(testOthers().map(([id]) => id));
 // Classify every pair of devices in the room using each side's reported links.
 function meshSummary() {
-  const nodes = [[me.id, me.name, myLinksView()], ...onlineOthers().map(([id, m]) => [id, m.name, m.status && m.status.links])];
-  const out = { pairs: 0, ok: 0, H: 0, S: 0, R: 0, fail: 0, pending: 0, failed: [], why: [] };
+  const nodes = [[me.id, me.name, myLinksView()], ...testOthers().map(([id, m]) => [id, m.name, isLive(m) ? m.status.links : null])]; // a status that is no longer fresh says nothing
+  const out = { pairs: 0, ok: 0, H: 0, S: 0, R: 0, D: 0, fail: 0, pending: 0, unknown: 0, failed: [], why: [], failSame: 0, failOther: 0 };
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
     const [ia, na, la] = nodes[i], [ib, nb, lb] = nodes[j];
-    const v = [la && la[ib], lb && lb[ia]].filter(Boolean).map(x => x.r);
+    // our own pairs: only what this device sees right now (the other side's report can be stale)
+    const v = (i === 0 ? [la && la[ib]] : [la && la[ib], lb && lb[ia]]).filter(Boolean).map(x => x.r);
+    if (!v.length && i !== 0) { out.unknown++; continue; } // a pair this device cannot observe is not a failed pair
     out.pairs++;
-    const route = v.find(r => r === 'H' || r === 'S' || r === 'R');
-    if (route) { out.ok++; out[route]++; }
-    else if (i === 0 && failDiag.has(ib) && out.why.length < 3) out.why.push(`${nb}: ${diagReason(failDiag.get(ib))}`);
-    if (route) continue;
-    if (v.includes('-') || v.includes('c') || !v.length) { out.pending++; out.failed.push(`${na}⇄${nb}`); }
-    else { out.fail++; out.failed.push(`${na}⇄${nb}`); }
+    // the two ends normally agree; a definite answer from either end beats "unknown"
+    const route = v.find(r => r === 'R') || v.find(r => r === 'H' || r === 'S') || v.find(r => r === 'D');
+    if (route) { out.ok++; out[route]++; continue; }
+    if (i === 0 && failDiag.has(ib)) { // only our own pairs: the reason comes from this device's connection attempts
+      const d = failDiag.get(ib);
+      if (out.why.length < 3) out.why.push(`${nb}: ${diagReason(d)}`);
+      if (d.sameNat === true) out.failSame++; else if (d.sameNat === false) out.failOther++;
+    }
+    if (v.includes('-') || v.includes('c') || !v.length) out.pending++; else out.fail++;
+    out.failed.push(`${na}⇄${nb}`);
   }
   return out;
 }
+const liveOthers = () => testOthers().filter(([, m]) => isLive(m));
+// online in the room but without a data path to us (found through signalling only, or silent for a while)
+const unreachedNames = () => testOthers().filter(([, m]) => !isLive(m)).map(([, m]) => m.name);
 async function runRtAndCollect(cfg) {
-  const id = rand(8), expected = 1 + onlineOthers().length;
+  const id = rand(8), expect = liveOthers().map(([pid, mm]) => [pid, mm.name]);
   const m = { t: 'rtstart', id, rate: cfg.rate, size: cfg.size, dur: cfg.dur, fromName: me.name };
   seenFlood.add('rs' + id);
   for (const L of links.values()) if (L.isOpen) L.send(m);
   startRt(m);
-  await waitFor(() => rtResults.get(id) && rtResults.get(id).size >= expected, cfg.dur * 1000 + 12000, 300);
-  const res = rtResults.get(id) || new Map();
+  await waitFor(() => rtResults.get(id) && rtResults.get(id).size >= 1 + expect.length, cfg.dur * 1000 + 12000, 300);
+  return rtAggregate(rtResults.get(id) || new Map(), cfg.rate, expect);
+}
+// Worst case over every pair that sent something. A pair that got nothing back counts (as 100% loss):
+// leaving it out would turn "one pair is dead" into "everything is fine".
+function rtAggregate(res, rate, expect) {
+  const ids = testIds(), names = new Set(testOthers().map(([, m]) => m.name).concat(me.name));
+  const all = [...res.values()].filter(x => x.from === me.id || ids.has(x.from)).map(x => Object.assign({}, x, { rows: x.rows.filter(r => names.has(r.to)) }));
   const agg = k => {
-    const rows = [...res.values()].flatMap(x => x.rows.filter(r => r.k === k && !r.na && r.got));
+    const rows = all.flatMap(x => x.rows.filter(r => r.k === k && !r.na && r.sent));
     if (!rows.length) return null;
-    const mx = f => Math.max(...rows.map(r => r[f] || 0));
-    return { p50: mx('p50'), p95: mx('p95'), p99: mx('p99'), max: mx('max'), loss: mx('loss'), jit: mx('jit'),
-      stalls: rows.reduce((n, r) => n + (r.stalls || 0), 0), maxGap: mx('maxGap'), pairs: rows.length };
+    const got = rows.filter(r => r.got);
+    const mx = (f, list = rows) => list.length ? Math.max(...list.map(r => r[f] || 0)) : null;
+    return { p50: mx('p50', got), p95: mx('p95', got), p99: mx('p99', got), max: mx('max', got), loss: mx('loss'), jit: mx('jit', got),
+      stalls: rows.reduce((n, r) => n + (r.stalls || 0), 0), maxGap: mx('maxGap'), pairs: rows.length, dead: rows.length - got.length };
   };
-  const fastNA = [...res.values()].some(x => x.rows.some(r => r.k === 'u' && r.na));
-  const offs = [...res.values()].flatMap(x => x.rows.filter(r => r.k === 'r' && r.off != null).map(r => Math.abs(r.off)));
-  const tickGap = Math.max(0, ...[...res.values()].map(x => x.tickGap || 0));
-  const bg = [...res.values()].filter(x => x.hidden || x.tickGap > 3 * 1000 / cfg.rate + 30).map(x => x.name);
-  return { devices: res.size, expected, u: agg('u'), r: agg('r'), fastNA, off: offs.length ? Math.max(...offs) : null, tickGap, bg,
-    missing: onlineOthers().filter(([pid]) => !res.has(pid)).map(([, mm]) => mm.name) };
+  const fastNA = all.some(x => x.rows.some(r => r.k === 'u' && r.na));
+  const offs = all.flatMap(x => x.rows.filter(r => r.k === 'r' && r.off != null).map(r => Math.abs(r.off)));
+  const tickGap = Math.max(0, ...all.map(x => x.tickGap || 0));
+  const bg = all.filter(x => x.hidden || x.tickGap > 3 * 1000 / rate + 30).map(x => x.name);
+  // did every device really send at the advertised rate? (slow timers quietly turn 60/s into 30/s)
+  const under = all.filter(x => x.rate && x.dur && x.rows.some(r => r.sent && r.sent < 0.85 * x.rate * x.dur)).map(x => x.name);
+  return { devices: res.size, expected: 1 + expect.length, u: agg('u'), r: agg('r'), fastNA, off: offs.length ? Math.max(...offs) : null, tickGap, bg, under,
+    missing: expect.filter(([pid]) => !res.has(pid)).map(([, n]) => n), unreached: unreachedNames() };
 }
 function rtVerdictOf(res) {
   const base = res.u && !res.fastNA ? res.u : res.r;
@@ -2051,7 +2247,7 @@ const vStatus = v => v.startsWith('◎') || v.startsWith('○') ? 'pass' : v.sta
 
 function autoBeat(text) {
   auto.seq++;
-  const m = { t: 'autostep', id: auto.id, seq: auto.seq, by: me.name, text };
+  const m = { t: 'autostep', id: auto.id, seq: auto.seq, by: me.name, text, age: Math.round(now() - auto.t0) };
   seenFlood.add('as' + auto.id + ':' + auto.seq);
   for (const L of links.values()) if (L.isOpen) L.send(m);
 }
@@ -2064,7 +2260,9 @@ function stepStart(title) {
   return st;
 }
 // a run in this room (ours or someone else's): playground tests must not start meanwhile
-const autoBusy = () => !!(auto && auto.running) || !!(remoteAuto && now() - remoteAuto.at < 40000);
+const autoBusy = () => !!(auto && auto.running) || !!(remoteAuto && now() - remoteAuto.at < 40000) || [...members.values()].some(m => isLive(m) && m.status.busy === 'auto');
+// someone in the room is in a long-run test that this device is not part of (it joined late or missed the start)
+const othersInLong = () => [...members.values()].some(m => isLive(m) && /^lt:/.test(m.status.busy) && !(ltRunning() && m.status.busy === 'lt:' + lt.id));
 function stepEnd(st, status, detail) { st.status = status; st.detail = detail; renderSteps(); }
 function renderSteps() {
   $('autoSteps').innerHTML = auto.steps.map(st => `<li><span>${ICON[st.status]}</span><span>${esc(st.title)}${st.detail ? `<small>${esc(st.detail)}</small>` : ''}</span></li>`).join('');
@@ -2072,14 +2270,17 @@ function renderSteps() {
 function renderRemoteAuto() {
   const busy = remoteAuto && now() - remoteAuto.at < 40000;
   $('autoWho').textContent = busy ? `${remoteAuto.by} が自動テスト実行中: ${remoteAuto.text}` : '';
-  $('autoBtn').disabled = SUB || !!busy || !!(auto && auto.running) || ltRunning();
+  $('autoBtn').disabled = SUB || !!busy || !!(auto && auto.running) || ltRunning() || othersInLong();
+  if (!busy && othersInLong()) $('autoWho').textContent = '他の端末が長時間テストを実行中です（終わるまでテストは開始できません）';
   $('soloBtn').disabled = SUB || !!busy || !!(auto && auto.running) || ltRunning() || soloBusy;
 }
 setInterval(renderRemoteAuto, 2000);
 
 async function runAuto() {
   const prof = PROFILES[$('autoProfile').value];
-  auto = { id: rand(10), running: true, steps: [], seq: 0, start: Date.now() };
+  // a stand-in partner left over from a one-device test would be counted as a real device
+  if (soloFrame && onlineOthers().some(([, m]) => !(m.status && m.status.sub))) { soloClose(); await waitFor(() => !subPeers().length, 5000); }
+  auto = { id: rand(10), running: true, steps: [], seq: 0, start: Date.now(), t0: now() };
   // keep telling the room that a run is in progress, also during steps that take longer than the 40 s "busy" window
   const beat = setInterval(() => { const cur = auto.steps[auto.steps.length - 1]; if (auto.running && cur) autoBeat(cur.title); }, 10000);
   const M = { profile: $('autoProfile').value };
@@ -2104,10 +2305,12 @@ async function runAuto() {
     // try once more with the configured STUN/TURN servers so the two cases can be told apart.
     if (!M.loopback.ok && CFG.ice.length) M.loopback.viaIce = (await loopback({ iceServers: CFG.ice, timeout: 8000 })).ok;
     const lbw = lbState(M.loopback);
-    stepEnd(st, lbw === 'ok' ? 'pass' : lbw === 'ng' ? 'fail' : 'warn', LB_TEXT[lbw].replace('{ms}', M.loopback.ms));
+    stepEnd(st, lbw === 'ok' ? 'pass' : lbw === 'ng' ? 'fail' : 'warn', lbw === 'ice' && !M.loopback.hidden
+      ? '端末内テスト: サーバーなしでは不成立、STUN/TURN 経由は成立。この端末からはローカルの接続候補が出ていない、または届かない（ブラウザや管理ポリシーの設定の可能性）'
+      : LB_TEXT[lbw].replace('{ms}', M.loopback.ms));
 
     st = stepStart('シグナリング（ルームへの自動接続）');
-    const sigHost = CFG.server ? CFG.server.host : '0.peerjs.com';
+    const sigHost = maskIps(CFG.server ? CFG.server.host : '0.peerjs.com'); // a LAN server given by address must not end up in results
     if (typeof Peer === 'undefined') { M.signal = { ok: false, host: sigHost, why: 'nolib' }; stepEnd(st, 'fail', 'PeerJS を読み込めていません'); }
     else {
       if (!room) { joinRoom($('room').value.trim() || 'room-' + rand(6)); enableShared(true); }
@@ -2120,7 +2323,7 @@ async function runAuto() {
     st = stepStart('STUN（別ネットワークと直接つなぐ準備・UDP）');
     const d = await runDiag();
     M.diag = Object.assign({}, d);
-    stepEnd(st, !d.stunCount ? 'skip' : !d.srflx ? 'fail' : d.symmetric ? 'warn' : 'pass', natText(d) + `（host ${d.host}${d.hostHidden ? '・ローカル IP 非公開' : ''} / srflx ${d.srflx}${d.v6 ? ' / IPv6 あり' : ''}）`);
+    stepEnd(st, !d.stunCount ? 'skip' : !d.srflx ? (d.v6 ? 'warn' : 'fail') : d.symmetric ? 'warn' : 'pass', natText(d) + `（host ${d.host}${d.hostHidden ? '・ローカル IP 非公開' : ''} / srflx ${d.srflx}${d.v6 ? ' / IPv6 あり' : ''}）`);
 
     st = stepStart('TURN 中継（直接つながらない時の保険）');
     if (!d.hasTurn) { M.turn = null; stepEnd(st, 'skip', '未設定（「設定」で TURN サーバーを入れると判定します）'); }
@@ -2134,11 +2337,11 @@ async function runAuto() {
     // ---- with peers ----
     st = stepStart('参加者の確認');
     if (M.signal && M.signal.ok) await waitFor(() => onlineOthers().length > 0, 6000);
-    M.participants = [me.name, ...onlineOthers().map(([, m]) => m.name)];
+    M.participants = [me.name, ...testOthers().map(([, m]) => m.name)];
     const n = M.participants.length - 1;
     M.roomBusy = !n && roomBusy && !beaconOpen;
-    M.solo = n > 0 && onlineOthers().every(([, m]) => m.status && m.status.sub);
-    if (M.roomBusy) stepEnd(st, 'fail', 'このルームには他の端末がいますが、接続できません（相手が古い版のファイルか、端末同士の通信が止められている可能性）→ 端末単体の項目のみ判定');
+    M.solo = n > 0 && testOthers().every(([, m]) => isSub(m));
+    if (M.roomBusy) stepEnd(st, 'warn', 'このルームの窓口は誰かが持っていますが、相手を確認できません（直前に閉じた接続の残り、または相手が古い版のファイルの可能性。1 分ほど待って再実行）→ 端末単体の項目のみ判定');
     else if (!n) stepEnd(st, 'skip', '他の端末がいません → 端末単体の項目のみ判定（同じルームに他の端末を入れて再実行すると全項目を判定します）');
     else stepEnd(st, 'pass', M.solo ? '1 台テスト: この端末の中の仮の相手と接続（端末同士のネットワークは測れません）' : `${n + 1} 台: ${M.participants.join(', ')}`);
 
@@ -2146,11 +2349,12 @@ async function runAuto() {
       st = stepStart('直接接続（全組み合わせ）');
       await waitFor(() => meshSummary().pending === 0, 25000, 500);
       const ms = M.mesh = meshSummary();
+      M.participants = [me.name, ...testOthers().map(([, m]) => m.name)]; // someone may have joined while we waited
       // which devices tell their local address to others (the LAN helper): needed to read an H / S result correctly
-      M.lanAssist = [lanAssist ? me.name : null, ...onlineOthers().filter(([, m]) => m.status && m.status.lan).map(([, m]) => m.name)].filter(Boolean);
+      M.lanAssist = [lanAssist ? me.name : null, ...testOthers().filter(([, m]) => m.status && m.status.lan).map(([, m]) => m.name)].filter(Boolean);
       const lanNote = M.lanAssist.length ? `｜「LAN 内の直接接続を助ける」を使った端末: ${M.lanAssist.join(', ')}` : '';
       stepEnd(st, ms.ok === ms.pairs ? 'pass' : ms.ok ? 'warn' : 'fail',
-        `${ms.pairs} 組中 直接 ${ms.ok}（同一LAN ${ms.H} / 別ネットワーク ${ms.S} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') + (ms.why.length ? `｜理由: ${ms.why.join(' ／ ')}` : '') + lanNote +
+        `${ms.pairs} 組中 直接 ${ms.ok}（同じネットワーク ${ms.H} / 別ネットワーク ${ms.S}${ms.D ? ` / どちらか不明 ${ms.D}` : ''} / TURN中継 ${ms.R}）` + (ms.failed.length ? ` / 直接つながらない: ${ms.failed.join(', ')}` : '') + (ms.why.length ? `｜理由: ${ms.why.join(' ／ ')}` : '') + lanNote +
         (ms.ok ? '' : '｜相手は見つかるのに端末同士の通信が通りません（Wi-Fi の端末間通信の禁止・ローカル IP が伝わらない等）。「相手が出てこない・つながらないとき」を参照'));
 
       if (!ms.ok) {
@@ -2166,7 +2370,8 @@ async function runAuto() {
       await waitFor(() => burst && burst.bid === bm.bid && burst.done, 65000, 250);
       const br = M.sync = (burst && burst.result) || { ok: false };
       stepEnd(st, br.ok ? (br.sec <= 5 ? 'pass' : 'warn') : 'fail',
-        br.ok ? `${br.devices} 台すべて一致（書き込み完了から ${br.sec} 秒で収束）` + (ms.ok < ms.pairs ? '。直接つながらない組も他の端末経由で同期' : '') : `60 秒以内に一致せず（${(br.bad || []).join(', ')}）`);
+        (br.ok ? `${br.devices} 台すべて一致（書き込み完了から ${br.sec} 秒で収束）` + (ms.ok < ms.pairs && !(br.excluded || []).length ? '。直接つながらない組も他の端末経由で同期' : '')
+          : `60 秒以内に一致せず` + ((br.bad || []).length ? `（${br.bad.join(', ')}）` : '')) + ((br.excluded || []).length ? `｜未接続のため対象外: ${br.excluded.join(', ')}` : ''));
 
       for (const cfg of prof.rt) {
         st = stepStart(`${cfg.title}・${cfg.dur} 秒`);
@@ -2174,6 +2379,8 @@ async function runAuto() {
         const base = r.u && !r.fastNA ? r.u : r.r;
         const v = rtVerdictOf(r);
         let detail = base ? `${v}｜最悪の組: p95 ${f0(base.p95)}ms / p99 ${f0(base.p99)}ms / ロス ${base.loss.toFixed(1)}% / 途切れ ${base.stalls} 回` : '結果なし';
+        if (base && base.dead) detail += `｜${base.dead} 方向で 1 通も返ってこなかった`;
+        if (r.unreached.length) detail += `｜未接続のため対象外: ${r.unreached.join(', ')}`;
         if (r.fastNA) detail += '｜高速モード使用不可（確実モードで判定）';
         if (r.u && r.r && r.r.p99 > r.u.p99 * 2 + 20) detail += `｜確実モードは再送待ちで p99 ${f0(r.r.p99)}ms`;
         if (r.missing.length) detail += `｜結果なし: ${r.missing.join(', ')}`;
@@ -2184,14 +2391,14 @@ async function runAuto() {
 
       st = stepStart(`データ転送速度（${prof.mb} MB を各相手へ）`);
       const sp = M.speed = [];
-      for (const L of [...links.values()].filter(L => L.isOpen)) sp.push({ to: L.name, mbps: await speedTest(L, prof.mb) });
+      for (const L of [...links.values()].filter(L => L.isOpen && testIds().has(L.peerId))) sp.push({ to: L.name, mbps: await speedTest(L, prof.mb) });
       const mins = sp.map(x => x.mbps || 0);
       const minMbps = mins.length ? Math.min(...mins) : null;
       stepEnd(st, minMbps == null ? 'skip' : minMbps >= 5 ? 'pass' : minMbps >= 1 ? 'warn' : 'fail',
         sp.length ? sp.map(x => `${x.to}: ${x.mbps ? x.mbps.toFixed(1) + ' Mbps' : '失敗'}`).join(' / ') : '直接接続なし');
 
       st = stepStart('切断からの自動復帰（全相手）');
-      const targets = [...links.values()].filter(L => L.isOpen && L.kind === 'peerjs').map(L => [L.peerId, L.name]);
+      const targets = [...links.values()].filter(L => L.isOpen && L.kind === 'peerjs' && testIds().has(L.peerId)).map(L => [L.peerId, L.name]);
       if (!targets.length) { M.reconnect = null; stepEnd(st, 'skip', 'PeerJS の接続がないため未実施（手動接続は自動復帰しません）'); }
       else {
         const per = [];
@@ -2237,13 +2444,21 @@ async function runAuto() {
     renderRemoteAuto();
     return;
   }
-  const result = {
+  let result;
+  try {
+  result = {
     v: 1, build: BUILD, id: auto.id, ts: Date.now(), label: (M.solo ? '【1 台テスト】' : '') + $('autoLabel').value.trim(), solo: !!M.solo, profile: M.profile, by: me.name,
     device: { name: me.name, ua: navigator.userAgent, page: location.protocol === 'file:' ? 'ローカルファイル' : 'Web' },
     room, participants: M.participants || [me.name],
     steps: auto.steps.map(x => ({ title: x.title, status: x.status, detail: maskIps(x.detail) })),
-    caps: deriveCaps(M), metrics: JSON.parse(maskIps(JSON.stringify(M))),
+    caps: maskDeep(deriveCaps(M)), metrics: maskDeep(M),
   };
+  } catch (e) {
+    auto.running = false; renderRemoteAuto();
+    $('autoStatus').textContent = '結果をまとめる途中でエラーが起きました: ' + e.message;
+    log('自動テスト: 結果をまとめられませんでした: ' + e.message, 'ng');
+    return;
+  }
   auto.running = false;
   saveResult(result);
   seenFlood.add('ar' + result.id);
@@ -2255,7 +2470,7 @@ async function runAuto() {
   log('自動テスト完了', 'ok');
   renderRemoteAuto();
 }
-$('autoBtn').onclick = () => { if (!autoBusy() && !ltRunning()) runAuto(); };
+$('autoBtn').onclick = () => { if (!autoBusy() && !ltRunning() && !othersInLong()) runAuto(); };
 
 // One-device test: a second copy of this page runs in an iframe and joins the same room, so every test can
 // run without another device. It proves the page, the browser and the signalling server work from here;
@@ -2273,7 +2488,13 @@ $('soloBtn').onclick = async () => {
   try {
     if (typeof Peer !== 'undefined' && !room) { joinRoom($('room').value.trim() || 'room-' + rand(6)); enableShared(true); }
     $('autoStatus').textContent = '1 台テスト: 仮の相手を準備中…';
-    if (await waitFor(() => peer && peer.open, 15000)) {
+    const real = () => onlineOthers().filter(([, m]) => !(m.status && m.status.sub));
+    if (!(await waitFor(() => peer && peer.open, 15000))) {
+      $('autoStatus').textContent = 'シグナリングサーバーに接続できないため、仮の相手を作れません。端末単体の項目だけ確認します';
+    } else if (real().length) {
+      soloClose();
+      log('ルームに他の端末がいるので、1 台テストではなく通常の自動テストを実行します', 'warn');
+    } else {
       if (!soloFrame) {
         soloFrame = document.createElement('iframe');
         soloFrame.title = '仮の相手';
@@ -2304,61 +2525,78 @@ function deriveCaps(M) {
   else if (lbw === 'hidden') add('webrtc', WEBRTC, 'cond', '端末の中のテストは不成立。ローカル IP が隠されているためと考えられ、WebRTC 自体が禁止されているとは限らない → 相手と接続して確認');
   else if (lbw === 'ng') add('webrtc', WEBRTC, 'ng', 'ブラウザ/ポリシーで WebRTC が制限されている可能性');
   else add('webrtc', WEBRTC, 'na', '未実施');
-  if (M.signal) add('room', `ルームで自動接続（シグナリング: ${M.signal.host}）`, M.signal.ok ? 'ok' : 'ng',
-    M.signal.ok ? 'ルーム名を共有するだけで全員つながる' : '接続できない → 手動接続（コピペ）のみ。通信許可の申請先はこのホスト 1 つ');
-  else add('room', 'ルームで自動接続（シグナリング）', 'na', '未実施');
+  if (M.signal) add('room', `ルームへの参加（シグナリング: ${M.signal.host}）`, M.signal.ok ? 'ok' : 'ng',
+    M.signal.ok ? 'シグナリングサーバーに接続でき、同じルームの相手を見つけられる。相手と実際につながるかは「相手の端末との直接接続（P2P）」を見る'
+      : '接続できない → 手動接続（コピペ）か、社内に立てたサーバーを使う。通信許可の申請先はこのホスト 1 つ');
+  else add('room', 'ルームへの参加（シグナリング）', 'na', '未実施');
   const manualOpen = [...links.values()].some(L => L.kind === 'manual' && L.isOpen);
   const MANUAL = 'サーバーなし接続（手動コピペ）';
+  // only a real manual connection is evidence; everything else is a forecast and stays "unverified"
   if (manualOpen) add('manual', MANUAL, 'ok', '手動接続で通信できている');
-  else if (lb) add('manual', MANUAL, 'cond', '同じネットワーク内なら使える見込み（2 台ずつ・文字列のやり取りが必要）');
-  else if (linked || lbw === 'ice' || lbw === 'hidden') add('manual', MANUAL, 'cond', 'ローカル IP が隠されているため、同じネットワーク内では「LAN 内の直接接続を助ける」と併用する必要がある見込み');
-  else add('manual', MANUAL, lbw === 'ng' ? 'ng' : 'na', lbw === 'ng' ? 'WebRTC が動かない' : '未実施');
+  else if (lbw === 'ng' && !linked) add('manual', MANUAL, 'ng', 'この端末で WebRTC が動いていない');
+  else if (lb) add('manual', MANUAL, 'na', '未検証（手動でつないで確認）。端末内テストは成功しているので、同じネットワーク内なら使える見込み');
+  else if (linked || lbw === 'ice' || lbw === 'hidden') add('manual', MANUAL, 'na', '未検証（手動でつないで確認）。端末内ではローカル IP 経由の接続が成立していないので、同じネットワーク内では「LAN 内の直接接続を助ける」との併用が必要になる可能性がある');
+  else add('manual', MANUAL, 'na', '未実施');
   const ms = M.mesh;
   const REACH = '相手の端末との直接接続（P2P）';
-  if (ms && ms.pairs) add('reach', REACH, ms.ok === ms.pairs ? 'ok' : ms.ok ? 'cond' : 'ng',
-    ms.ok === ms.pairs ? `${ms.pairs} 組すべて直接接続` : ms.ok ? `${ms.pairs} 組中 ${ms.ok} 組。つながらない: ${ms.failed.join(', ')}`
-      : '相手は見つかったが、どの組も直接つながらない。' + (ms.why && ms.why.length ? ms.why[0] : '端末同士の通信が止められている可能性。「LAN 内の直接接続を助ける」か TURN 中継が必要'));
-  else if (M.roomBusy) add('reach', REACH, 'ng', 'ルームに他の端末がいるのに接続できない（相手が古い版のファイル、または端末同士の通信が止められている）');
+  const unseen = ms && ms.unknown ? `｜この端末からは見えない組が ${ms.unknown} 組ある（未確認）` : '';
+  if (ms && ms.pairs) add('reach', REACH, ms.ok === ms.pairs && !ms.R && !ms.unknown ? 'ok' : ms.ok ? 'cond' : 'ng',
+    (ms.ok === ms.pairs ? `${ms.pairs} 組すべて接続` + (ms.R ? `（うち ${ms.R} 組は TURN 中継で、直接ではない）` : '（直接）') : ms.ok ? `${ms.pairs} 組中 ${ms.ok} 組。つながらない: ${ms.failed.join(', ')}`
+      : '相手は見つかったが、直接つながらない。' + (ms.why && ms.why.length ? ms.why[0] : '端末同士の通信が止められている可能性。「LAN 内の直接接続を助ける」か TURN 中継が必要')) + unseen);
+  else if (M.roomBusy) add('reach', REACH, 'na', '未検証。ルームの窓口は誰かが持っているが、相手を確認できなかった（直前に閉じた接続の残り、または相手が古い版のファイルの可能性）');
   else add('reach', REACH, 'na', '相手がいないため未検証');
   const np = ms && ms.pairs && !ms.ok ? '相手と直接つながらないため未検証' : '相手がいないため未検証';
-  add('lan', '同じネットワーク内の端末と直接接続', ms && ms.H ? 'ok' : 'na', ms && ms.H ? `同一LAN の組 ${ms.H} 組で直接接続` + (M.lanAssist && M.lanAssist.length ? `（「LAN 内の直接接続を助ける」を使用: ${M.lanAssist.join(', ')}）` : '（補助なし）') : '同じネットワーク内の相手とは未検証');
+  const partial = !!(ms && ms.pairs && ms.ok < ms.pairs);
+  const helper = M.lanAssist && M.lanAssist.length ? `（「LAN 内の直接接続を助ける」を使用: ${M.lanAssist.join(', ')}）` : '';
+  const LAN = '同じネットワーク内の端末と直接接続', WAN = '別ネットワーク（モバイル回線・自宅など）と直接接続';
+  if (ms && ms.H) add('lan', LAN, 'ok', `同じネットワーク内の組 ${ms.H} 組で直接接続` + helper);
+  else if (ms && ms.failSame) add('lan', LAN, 'ng', `同じネットワーク内の相手 ${ms.failSame} 台と直接つながらない` + helper + (ms.why.length ? '｜' + ms.why[0] : ''));
+  else add('lan', LAN, 'na', ms && ms.D ? '直接つながった組はあるが、同じネットワークかどうかを判定できなかった（STUN の応答がなく比べられない）' : '同じネットワーク内の相手とは未検証');
   const d = M.diag;
-  if (ms && ms.S) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ok', `別ネットワークの組 ${ms.S} 組で直接接続`);
-  else if (d && d.stunCount && !d.srflx) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN（UDP）が通らない → TURN 中継が必要');
-  else if (d && !d.stunCount) add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', 'ng', 'STUN 未設定のため不可');
-  else add('wan', '別ネットワーク（モバイル回線・自宅など）と直接接続', d && d.symmetric ? 'cond' : 'na',
-    d && d.symmetric ? '対称型 NAT のため相手次第。別ネットワークの端末を入れて再テストを' : '別ネットワークの相手とは未検証（STUN は応答あり）');
+  if (ms && ms.S) add('wan', WAN, 'ok', `別ネットワークの組 ${ms.S} 組で直接接続`);
+  else if (ms && ms.failOther) add('wan', WAN, 'ng', `別ネットワークの相手 ${ms.failOther} 台と直接つながらない → TURN 中継が必要`);
+  else add('wan', WAN, 'na', '別ネットワークの相手とは未検証。' + (!d ? '' : !d.stunCount ? 'STUN が未設定なので、このままでは直接つながらない見込み'
+    : !d.srflx ? 'STUN の応答がなく（UDP が外に出られない可能性）、TURN 中継が必要になる見込み'
+    : d.symmetric ? '対称型 NAT の可能性があり、相手によっては直接つながらない見込み' : 'STUN は応答あり。別ネットワークの端末を入れて確認'));
   if (M.turn) add('turn', 'TURN 中継（直接つながらない時の保険）', M.turn.ok ? 'ok' : 'ng', (M.turn.ok ? 'TURN 経由の送受信に成功' : 'TURN 経由で接続できない') + (M.turn.per ? `（${turnText(M.turn)}）` : ''));
   else add('turn', 'TURN 中継（直接つながらない時の保険）', ms && ms.R ? 'ok' : 'na', ms && ms.R ? '中継経由の接続あり' : '未設定');
-  if (peers >= 2 && ms) add('mesh', '3 台以上の同時接続', ms.ok === ms.pairs ? 'ok' : M.sync && M.sync.ok ? 'cond' : 'ng',
-    ms.ok === ms.pairs ? `${peers + 1} 台が全員と直接接続` : M.sync && M.sync.ok ? `一部の組（${ms.failed.join(', ')}）は他の端末経由で同期` : '直接つながらない組があり同期も不完全');
+  if (peers >= 2 && ms) add('mesh', '3 台以上の同時接続', ms.ok === ms.pairs && !ms.unknown ? 'ok' : ms.ok === ms.pairs ? 'cond' : M.sync && M.sync.ok ? 'cond' : 'ng',
+    (ms.ok === ms.pairs ? `${peers + 1} 台が全員と接続` : M.sync && M.sync.ok ? `一部の組（${ms.failed.join(', ')}）は他の端末経由で同期` : !M.sync ? '直接つながらない組がある（同期は未検証）' : '直接つながらない組があり同期も不完全') + unseen);
   else add('mesh', '3 台以上の同時接続', 'na', `${peers + 1} 台でのテストのため未検証（3 台以上で再実行を）`);
-  if (M.sync) add('board', '共有ボード・チャット・ターン制ゲーム', M.sync.ok ? 'ok' : 'ng', M.sync.ok ? `同時書き込みが完了から ${M.sync.sec} 秒で全員一致` : '同期が完了しない');
+  const syncOut = M.sync && M.sync.excluded && M.sync.excluded.length ? M.sync.excluded : null;
+  if (M.sync) add('board', '共有ボード・チャット・ターン制ゲーム', !M.sync.ok ? 'ng' : syncOut ? 'cond' : 'ok',
+    (M.sync.ok ? `同時書き込みが完了から ${M.sync.sec} 秒で、つながっている ${M.sync.devices} 台が一致` : '同期が完了しない') + (syncOut ? `｜未接続のため対象外: ${syncOut.join(', ')}` : ''));
   else add('board', '共有ボード・チャット・ターン制ゲーム', 'na', np);
   const rtCap = (key, title, res, strict) => {
     if (!res) return add(key, title, 'na', np);
+    if (!res.u && !res.r) return add(key, title, 'na', '計測できなかった（送受信の記録がない）');
     const v = rtVerdictOf(res);
     const base = res.u && !res.fastNA ? res.u : res.r;
     const ev = base ? `p95 ${f0(base.p95)}ms・ロス ${base.loss.toFixed(1)}%（最悪の組）` : '結果なし';
     let status = vStatus(v) === 'pass' ? 'ok' : vStatus(v) === 'warn' ? 'cond' : 'ng';
     if (strict && v.startsWith('○')) status = 'cond';
-    const bg = res.bg && res.bg.length;
-    if (bg && status === 'ok') status = 'cond';
-    add(key, title, status, `${v}｜${ev}` + (bg ? '｜参考値（バックグラウンドの端末あり。前面にして再実行を）' : ''));
+    const notes = [];
+    if (res.bg && res.bg.length) notes.push('参考値（バックグラウンドの端末あり。前面にして再実行を）');
+    if (res.missing && res.missing.length) notes.push(`結果が届かなかった端末あり（${res.missing.join(', ')}）`);
+    if (partial) notes.push('直接つながった組だけの結果（つながらない組は測れていない）');
+    if (res.under && res.under.length) notes.push(`予定の回数を送れなかった端末あり（${res.under.join(', ')}）→ 実際はもっと低い頻度での結果`);
+    if (notes.length && status === 'ok') status = 'cond'; // measured, but not for everyone / not under clean conditions
+    add(key, title, status, `${v}｜${ev}` + notes.map(n => '｜' + n).join(''));
   };
   rtCap('coop', 'リアルタイム協力・早押しクイズ（30 回/秒）', M.rt30, false);
   rtCap('action', 'リアルタイム対戦アクション（60 回/秒）', M.rt60, true);
   rtCap('bigdata', '大きめデータの高頻度同期（1KB × 20 回/秒）', M.rt1k, false);
   const anyRt = M.rt30 || M.rt60 || M.rt1k;
-  add('fast', '高速モード（再送なし・最新値だけ送る）', !anyRt ? 'na' : [M.rt30, M.rt60, M.rt1k].some(r => r && r.fastNA) ? 'ng' : 'ok',
-    !anyRt ? '未検証' : [M.rt30, M.rt60, M.rt1k].some(r => r && r.fastNA) ? '使えない組がある → 確実モードのみで作る' : '全組で使用可');
+  const rts = [M.rt30, M.rt60, M.rt1k].filter(Boolean), fastDead = rts.some(r => r.fastNA || (r.u && r.u.dead));
+  add('fast', '高速モード（再送なし・最新値だけ送る）', !rts.length ? 'na' : fastDead ? 'ng' : rts.every(r => r.u) ? 'ok' : 'na',
+    !rts.length ? '未検証' : fastDead ? '使えない、または 1 通も届かない組がある → 確実モードのみで作る' : rts.every(r => r.u) ? '測った組すべてで使用可' : '計測できなかった');
   if (M.speed && M.speed.length) {
     const mn = Math.min(...M.speed.map(x => x.mbps || 0));
-    add('file', '画像・ファイルの共有', mn >= 5 ? 'ok' : mn >= 1 ? 'cond' : 'ng', `最低 ${mn.toFixed(1)} Mbps` + (mn >= 5 ? '' : mn >= 1 ? '（小さい画像なら可）' : ''));
+    add('file', '画像・ファイルの共有', mn >= 5 ? 'ok' : mn >= 1 ? 'cond' : 'ng', `最低 ${mn.toFixed(1)} Mbps` + (mn >= 5 ? '' : mn >= 1 ? '（小さい画像なら可）' : '') + (peers >= 2 ? '｜この端末と各相手の間だけを測定' : ''));
   } else add('file', '画像・ファイルの共有', 'na', np);
   if (M.reconnect) {
     const t = M.reconnect.times, ok = t.length && t.every(x => x != null), w = ok ? Math.max(...t) : null;
-    add('recover', '切断からの自動復帰', !ok ? 'ng' : w <= 5000 ? 'ok' : 'cond', ok ? `最大 ${(w / 1000).toFixed(1)} 秒で復帰` : '復帰しなかった');
+    add('recover', '切断からの自動復帰', !ok ? 'ng' : w <= 5000 ? 'ok' : 'cond', (ok ? `最大 ${(w / 1000).toFixed(1)} 秒でつなぎ直し` : '復帰しなかった') + '｜意図的に切ってからつなぎ直すまでの時間。実際の回線断は、気づくまでに 6 秒ほど余分にかかる' + (peers >= 2 ? '｜この端末と各相手の間だけを測定' : ''));
   } else add('recover', '切断からの自動復帰', 'na', '未検証');
   add('clock', '時刻合わせ（タイマー・どちらが先か判定）', M.clock == null ? 'na' : M.clock < 20 ? 'ok' : 'cond',
     M.clock == null ? '未検証' : M.clock < 20 ? `時計のずれ最大 ${f0(M.clock)}ms` : `時計のずれ最大 ${f0(M.clock)}ms → ゲーム側で補正が必要`);
@@ -2373,8 +2611,9 @@ function deriveCaps(M) {
       c.reason = `1 台テストでは未検証（この端末の中では ${{ ok: '○', cond: '△', ng: '×' }[c.status]}: ${c.reason}）`;
       c.status = 'na';
     }
-    C.unshift({ key: 'solo', title: 'この端末でツール一式が動く（1 台テスト）', status: works ? 'ok' : 'ng',
-      reason: works ? 'ルームへの参加・接続・同期・計測がこの端末の中で動作。端末同士のネットワークは未検証 → 次は 2 台以上で自動テスト'
+    const hid = !works && (lbw === 'hidden' || lbw === 'ice');
+    C.unshift({ key: 'solo', title: 'この端末でツール一式が動く（1 台テスト）', status: works ? 'ok' : hid ? 'cond' : 'ng',
+      reason: hid ? '仮の相手とつながらなかった。ブラウザがローカル IP を隠していて、端末の中でも相手の場所が伝わらないため（WebRTC が禁止されているとは限らない）。「LAN 内の直接接続を助ける」を押してからやり直すか、2 台で確認する' : works ? 'ルームへの参加・接続・同期・計測がこの端末の中で動作。端末同士のネットワークは未検証 → 次は 2 台以上で自動テスト'
         : 'この端末の中だけでも失敗した項目がある（手順の ❌ を確認）。ブラウザや管理ポリシーの制限の可能性' });
   }
   return C;
@@ -2403,16 +2642,29 @@ function validResult(r) {
       Array.isArray(r.caps) && r.caps.length <= 60 && r.caps.every(c => c && str(c.key) && str(c.title) && str(c.reason) && CAP_STATUS.has(c.status)) &&
       Array.isArray(r.participants) && r.participants.length <= 64 && r.participants.every(str) &&
       Array.isArray(r.steps) && r.steps.length <= 60 && r.steps.every(x => x && str(x.title) && Object.prototype.hasOwnProperty.call(ICON, x.status)) &&
-      !!r.device && typeof r.device === 'object' && JSON.stringify(r).length < 200000;
+      r.steps.every(x => x.detail == null || str(x.detail)) && [r.label, r.room, r.profile, r.build].every(x => x == null || str(x)) &&
+      !!r.device && typeof r.device === 'object' && [r.device.ua, r.device.page, r.device.name].every(x => x == null || str(x)) && JSON.stringify(r).length < 200000;
   } catch { return false; }
 }
 const loadHist = () => { const h = store.get(HKEY, []); return Array.isArray(h) ? h.filter(validResult) : []; };
 function saveResult(r) {
   if (SUB) return; // the stand-in partner shares this browser's storage with the real page
-  const h = loadHist().filter(x => x.id !== r.id);
+  const foreign = r.received || r.imported;
+  let h = loadHist();
+  if (foreign) {
+    if (h.some(x => x.id === r.id && !x.received && !x.imported)) return; // never replace a result this device produced
+    if (JSON.stringify(r).length > 80000) { log('受け取った結果が大きすぎるため保存しませんでした', 'warn'); return; }
+    if (r.received && Math.abs(r.ts - Date.now()) > 86400000) r = Object.assign({}, r, { ts: Date.now() }); // a wrong clock must not push real results out
+  }
+  h = h.filter(x => x.id !== r.id);
   h.push(r);
   h.sort((a, b) => a.ts - b.ts);
-  store.set(HKEY, h.slice(-100));
+  h = h.slice(-100);
+  // storage can be full: drop the oldest entries until it fits, and say so
+  for (let drop = 0; ; drop += 5) {
+    try { localStorage.setItem(HKEY, JSON.stringify(h.slice(drop))); if (drop) log(`保存領域がいっぱいのため、古い結果を ${drop} 件消しました`, 'warn'); break; }
+    catch (e) { if (drop >= h.length) { log('結果を保存できませんでした（このブラウザの保存領域が使えません）。.md / .json で書き出してください', 'warn'); break; } }
+  }
   renderHist();
 }
 const stamp = ts => { const d = new Date(ts), z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}`; };
@@ -2421,7 +2673,7 @@ function download(name, text, type) {
   a.href = URL.createObjectURL(new Blob([text], { type }));
   a.download = name;
   document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000); // iOS asks before saving; the data must still exist when the user answers
 }
 function toMarkdown(r) {
   const L = [`# P2P 自動テスト結果 ${new Date(r.ts).toLocaleString()}`, '',
@@ -2493,7 +2745,14 @@ let lastDiag = '';
 function maskIps(t) {
   // "Chrome/130.0.0.0" in a user agent looks like an IPv4 address: keep name/version tokens
   return t.replace(/([A-Za-z]\/)?\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, (m, ver) => ver ? m : '[IP]')
-    .replace(/\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){3,7}\b/gi, '[IP]'); // IPv6 (3+ colons, so clock times are kept)
+    .replace(/\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){3,7}\b/gi, '[IP]') // IPv6 (3+ colons, so clock times are kept)
+    .replace(/\b[0-9a-f]{1,4}::[0-9a-f]{1,4}\b/gi, '[IP]'); // short forms such as fe80::1
+}
+function maskDeep(v) {
+  if (typeof v === 'string') return maskIps(v);
+  if (Array.isArray(v)) return v.map(maskDeep);
+  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = maskDeep(v[k]); return o; }
+  return v;
 }
 function buildReport() {
   const L = [];
@@ -2546,7 +2805,7 @@ if (IS_FILE) $('shareBtn').textContent = 'ルーム名をコピー';
 $('room').value = params.get('room') || 'room-' + rand(6);
 $('joinBtn').onclick = () => { const r = $('room').value.trim(); if (r) { joinRoom(r); enableShared(true); } };
 $('leaveBtn').onclick = leaveRoom;
-$('room').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) $('joinBtn').click(); });
+$('room').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) $('joinBtn').click(); });
 $('shareBtn').onclick = async () => {
   const name = $('room').value.trim();
   if (IS_FILE) { // a file:// URL only exists on this device, so share the room name instead
